@@ -68,10 +68,14 @@ func (p *Packer) AllowPartialResults(allow bool) {
 }
 
 // SetQuantityShortCircuit enables or disables the large-quantity
-// optimisation. When enabled (the default) and the remaining items are all
-// identical, a fully-solved box is replicated for subsequent boxes instead of
-// being re-solved from scratch, so packing N identical items costs roughly
-// the same as packing one box full of them rather than scaling with N.
+// optimisation. When enabled (the default), each box evaluation only considers
+// as many of each item type as that box could physically hold, and once a box
+// has been solved its exact item makeup is replicated for as long as the pool
+// can supply more identical boxfuls - instead of re-solving from scratch. This
+// applies to a winning box made up of a mix of item types, not just a single
+// type, so packing a large quantity of several different items costs roughly
+// the same as packing the handful of distinct box layouts they produce rather
+// than scaling with the total quantity.
 func (p *Packer) SetQuantityShortCircuit(enabled bool) {
 	p.quantityShortCircuit = enabled
 }
@@ -93,12 +97,13 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 		// first) so that tie-breaking matches sequential evaluation.
 		candidates := p.candidateBoxes()
 		p.items.ensureSorted() // so the per-candidate clones don't each re-sort
+		signatureCounts := p.items.signatureCounts()
 		results := make([]*PackedBox, len(candidates))
 		var wg sync.WaitGroup
 		for i, box := range candidates {
 			// clone on this goroutine: lazy sorting makes clones of the
 			// shared list unsafe to take concurrently
-			packer := newVolumePacker(box, p.itemsForBoxEvaluation(box))
+			packer := newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
 			wg.Add(1)
 			go func(i int, packer *volumePacker) {
 				defer wg.Done()
@@ -137,62 +142,109 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 	return packedBoxes, nil
 }
 
-// replicateIdenticalBoxes is the large-quantity short-circuit. When a box has
-// just been packed full of a single item type and only more of that same item
-// type remains, every box type would pack exactly as it did in the iteration
-// just evaluated, so the winning configuration is replicated directly instead
-// of being re-solved.
+// replicateIdenticalBoxes is the large-quantity short-circuit. The box just
+// packed is the winner of a full evaluation of the current pool. As long as the
+// pool can supply another full copy of that box's exact item makeup - with
+// strictly more than one boxful of every component item type still remaining -
+// re-evaluating would deterministically reproduce the very same box, because no
+// box can pack more items than were available a moment ago and every losing box
+// can only pack fewer once items are removed. So the winning configuration is
+// replicated directly instead of being re-solved.
 //
-// Replication stops while strictly more than one boxful remains: the final
-// box may be only partially full, and a smaller box type might suit the
-// remainder better, so the tail goes through normal evaluation.
+// This handles a winning box made up of a mix of different item types, not just
+// a single type: the multiset of item signatures is what gets replicated.
+//
+// Replication stops while strictly more than one boxful of any component
+// remains: the final box may be only partially full, and a smaller box type
+// might suit the remainder better, so the tail goes through normal evaluation.
 func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	perBox := len(template.Items)
-	if perBox == 0 || p.items.count() <= perBox {
+	if perBox == 0 || p.boxQuantities[template.Box] <= 0 {
 		return nil
 	}
 
-	boxSignature, boxUniform := uniformPackedSignature(template.Items)
-	if !boxUniform {
-		return nil
+	// Multiset of item signatures making up the just-packed box.
+	boxCounts := make(map[itemSignature]int, 4)
+	for _, item := range template.Items {
+		boxCounts[signatureOf(item.Item)]++
 	}
-	remainingSignature, remainingUniform := p.items.uniformSignature()
-	if !remainingUniform || boxSignature != remainingSignature {
+	poolCounts := p.items.signatureCounts()
+
+	// How many further identical boxes the pool can supply while still leaving
+	// strictly more than one boxful of every component for the tail.
+	replications := p.boxQuantities[template.Box]
+	for sig, need := range boxCounts {
+		have := poolCounts[sig]
+		if have <= need {
+			return nil
+		}
+		// largest k with have-(k-1)*need > need, i.e. k boxfuls can be carved
+		// out and more than one boxful still remains.
+		if k := (have-need-1)/need + 1; k < replications {
+			replications = k
+		}
+	}
+	if replications <= 0 {
 		return nil
 	}
 
-	var clones []*PackedBox
-	for p.items.count() > perBox && p.boxQuantities[template.Box] > 0 {
-		clones = append(clones, template.clone())
-		p.boxQuantities[template.Box]--
-		p.items.removeFirstN(perBox)
+	clones := make([]*PackedBox, replications)
+	for i := range clones {
+		clones[i] = template.clone()
+	}
+	p.boxQuantities[template.Box] -= replications
+
+	// Remove replications copies of the box makeup from the pool. When the box
+	// holds a single item type that leads the sorted pool, those items are the
+	// sorted prefix and can be dropped cheaply; otherwise fall back to a
+	// signature-aware removal.
+	if sig, uniform := uniformPackedSignature(template.Items); uniform && signatureOf(p.items.top()) == sig {
+		p.items.removeFirstN(perBox * replications)
+	} else {
+		toRemove := make(map[itemSignature]int, len(boxCounts))
+		for sig, need := range boxCounts {
+			toRemove[sig] = need * replications
+		}
+		p.items.removeSignatureMultiset(toRemove)
 	}
 	return clones
 }
 
-// itemsForBoxEvaluation bounds the work done per box evaluation. When the
-// remaining items are all identical, a box can never hold more of them than
-// its volume and weight capacity allow, so only that many items need to be
-// considered - the total remaining quantity is irrelevant to how one box
-// packs.
-func (p *Packer) itemsForBoxEvaluation(box Box) *itemList {
-	if !p.quantityShortCircuit {
-		return p.items
-	}
-	signature, uniform := p.items.uniformSignature()
-	if !uniform {
+// itemsForBoxEvaluation bounds the work done per box evaluation. A box can never
+// hold more items of a given type than its volume and weight allow, so for each
+// distinct item type only that many copies need to be handed to the packer -
+// the total remaining quantity is irrelevant to how one box packs. Capping per
+// signature keeps each evaluation cheap even when the pool holds a large mix of
+// different item types. signatureCounts is the pool's precomputed
+// signature->count map, shared across all candidate boxes in this iteration.
+func (p *Packer) itemsForBoxEvaluation(box Box, signatureCounts map[itemSignature]int) *itemList {
+	if !p.quantityShortCircuit || len(signatureCounts) == 0 {
 		return p.items
 	}
 
-	unitVolume := maxInt(signature.width*signature.length*signature.depth, 1)
-	capacity := boxInnerVolume(box) / unitVolume
-	if signature.weight > 0 {
-		capacity = minInt(capacity, (box.MaxWeight()-box.EmptyWeight())/signature.weight)
+	innerVolume := boxInnerVolume(box)
+	netWeight := box.MaxWeight() - box.EmptyWeight()
+
+	caps := make(map[itemSignature]int, len(signatureCounts))
+	needsCap := false
+	for sig, have := range signatureCounts {
+		unitVolume := maxInt(sig.width*sig.length*sig.depth, 1)
+		capacity := innerVolume / unitVolume
+		if sig.weight > 0 {
+			capacity = minInt(capacity, netWeight/sig.weight)
+		}
+		if capacity < 0 {
+			capacity = 0
+		}
+		caps[sig] = capacity
+		if capacity < have {
+			needsCap = true
+		}
 	}
-	if capacity < p.items.count() {
-		return p.items.topN(capacity)
+	if !needsCap {
+		return p.items
 	}
-	return p.items
+	return p.items.cappedBySignature(caps)
 }
 
 // candidateBoxes returns a "smart" ordering of the boxes to try packing items

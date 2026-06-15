@@ -21,23 +21,31 @@ PHP library, using the same layer-based packing heuristics:
 
 ## Large quantities
 
-Naively, packing N identical items costs N/boxCapacity full packing solves —
+Naively, packing N items costs N/boxCapacity full packing solves —
 quadratic-ish behaviour that gets unreasonable at e-commerce quantities. This
-port short-circuits that: once a box has been packed full of a single item
-type and only more of that same item remains, the solved configuration is
-**replicated** for subsequent boxes instead of re-solved. Each box evaluation
-is also capped to the number of items that could physically fit by volume and
-weight, so the size of the order doesn't affect the cost of solving one box.
+port short-circuits that with two cooperating optimisations:
 
-The result is exact, not an approximation: while more than one boxful of an
-identical item remains, every box type would pack precisely as it did in the
-iteration just evaluated, so replication and re-solving give the same answer.
-The final partial box still goes through normal evaluation, so it can land in
-a smaller box where appropriate.
+- **Per-type work-bounding.** Each box evaluation is capped to the number of
+  items of each type that could physically fit by volume and weight, so the
+  size of the order doesn't affect the cost of solving one box — even when the
+  order mixes many distinct item types.
+- **Box replication.** Once a box has been solved, its exact item makeup is
+  **replicated** for subsequent boxes instead of re-solved. This works for a
+  winning box made up of a *mix* of item types, not just a single type: the
+  multiset of items is what gets replicated.
 
-Packing 100,000 identical items into 25,000 boxes takes ~10ms on an Apple M4.
-The behaviour is on by default and can be disabled with
-`packer.SetQuantityShortCircuit(false)`.
+The result is exact, not an approximation: while more than one boxful of every
+component item type remains, re-solving would deterministically reproduce the
+box just packed (no box can pack more items than were available a moment ago,
+and every alternative can only pack fewer once items are removed), so
+replication and re-solving give the same answer. The final partial box still
+goes through normal evaluation, so it can land in a smaller box where
+appropriate.
+
+Packing 100,000 identical items into 25,000 boxes takes ~10ms on an Apple M4;
+9,000 items spread across three distinct types packs in ~2ms (versus ~2s
+without the optimisation). The behaviour is on by default and can be disabled
+with `packer.SetQuantityShortCircuit(false)`.
 
 ## Usage
 
@@ -88,7 +96,7 @@ types: identity is used to track items through packing.
 | Call | Effect |
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
-| `packer.SetQuantityShortCircuit(false)` | Disable the identical-item replication optimisation |
+| `packer.SetQuantityShortCircuit(false)` | Disable the large-quantity replication optimisation |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
 | `boxpacker.NewVolumePacker(box, items).Pack()` | Pack as much as possible into one specific box |
 

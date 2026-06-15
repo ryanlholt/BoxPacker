@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // assertPackedBoxValid checks that all items are placed solely within the
@@ -261,6 +262,88 @@ func TestLargeQuantityCompletesQuickly(t *testing.T) {
 	assertPackedBoxValid(t, packed[len(packed)-1])
 }
 
+// TestLargeMixedQuantityCompletesQuickly packs large quantities of several
+// distinct item types. Without the per-signature work-bounding and multiset
+// short-circuit this re-solves the entire (huge) pool on every iteration and
+// takes seconds; with them it must finish near-instantly.
+func TestLargeMixedQuantityCompletesQuickly(t *testing.T) {
+	packer := NewPacker()
+	packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 100_000))
+	packer.AddItem(NewItem("A", 50, 50, 50, 50, RotationBestFit), 4_000)
+	packer.AddItem(NewItem("B", 40, 40, 40, 40, RotationBestFit), 4_000)
+	packer.AddItem(NewItem("C", 30, 30, 30, 30, RotationBestFit), 4_000)
+
+	start := time.Now()
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("mixed pack took %s, expected the short-circuit to keep it fast", elapsed)
+	}
+	if got := totalPackedItems(packed); got != 12_000 {
+		t.Fatalf("expected 12000 items packed, got %d", got)
+	}
+	assertPackedBoxValid(t, packed[0])
+	assertPackedBoxValid(t, packed[len(packed)/2])
+	assertPackedBoxValid(t, packed[len(packed)-1])
+}
+
+// TestMixedBoxShortCircuit exercises the short-circuit on a winning box made up
+// of more than one item type. Each box is packed with one A slab and one B slab
+// stacked, and that exact mix repeats, so the multiset short-circuit must
+// replicate it.
+func TestMixedBoxShortCircuit(t *testing.T) {
+	pack := func(shortCircuit bool) []*PackedBox {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1_000_000))
+		// A fills the bottom 60 of depth, B the remaining 40, so each box holds
+		// exactly one of each.
+		packer.AddItem(NewItem("A slab", 100, 100, 60, 100, RotationBestFit), 500)
+		packer.AddItem(NewItem("B slab", 100, 100, 40, 80, RotationBestFit), 500)
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return packed
+	}
+
+	withSC := pack(true)
+	withoutSC := pack(false)
+
+	if len(withSC) != len(withoutSC) {
+		t.Fatalf("box counts differ: %d with short-circuit, %d without", len(withSC), len(withoutSC))
+	}
+	for i := range withSC {
+		if withSC[i].Box.Reference() != withoutSC[i].Box.Reference() {
+			t.Errorf("box %d type differs: %q vs %q", i, withSC[i].Box.Reference(), withoutSC[i].Box.Reference())
+		}
+		if len(withSC[i].Items) != len(withoutSC[i].Items) {
+			t.Errorf("box %d item count differs: %d vs %d", i, len(withSC[i].Items), len(withoutSC[i].Items))
+		}
+	}
+	if got := totalPackedItems(withSC); got != 1_000 {
+		t.Fatalf("expected 1000 items packed, got %d", got)
+	}
+	// every box must actually carry the A+B mix that was replicated
+	for i, pb := range withSC {
+		assertPackedBoxValid(t, pb)
+		var a, b int
+		for _, item := range pb.Items {
+			switch item.Item.Description() {
+			case "A slab":
+				a++
+			case "B slab":
+				b++
+			}
+		}
+		if a != 1 || b != 1 {
+			t.Fatalf("box %d holds %d A and %d B, want 1 of each", i, a, b)
+		}
+	}
+}
+
 func TestMixedItemsPackValidly(t *testing.T) {
 	packer := NewPacker()
 	packer.AddBox(NewBox("medium", 250, 250, 120, 50, 240, 240, 110, 5000))
@@ -356,6 +439,19 @@ func BenchmarkLargeQuantity(b *testing.B) {
 		packer := NewPacker()
 		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1000))
 		packer.AddItem(NewItem("heavy cube", 50, 50, 50, 200, RotationBestFit), 100_000)
+		if _, err := packer.Pack(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLargeMixedQuantity(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		packer := NewPacker()
+		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 100_000))
+		packer.AddItem(NewItem("A", 50, 50, 50, 50, RotationBestFit), 3_000)
+		packer.AddItem(NewItem("B", 40, 40, 40, 40, RotationBestFit), 3_000)
+		packer.AddItem(NewItem("C", 30, 30, 30, 30, RotationBestFit), 3_000)
 		if _, err := packer.Pack(); err != nil {
 			b.Fatal(err)
 		}

@@ -207,6 +207,56 @@ func (l *itemList) totalVolume() int {
 	return volume
 }
 
+// signatureCounts returns how many items of each distinct signature the list
+// holds.
+func (l *itemList) signatureCounts() map[itemSignature]int {
+	counts := make(map[itemSignature]int)
+	for _, item := range l.list {
+		counts[signatureOf(item)]++
+	}
+	return counts
+}
+
+// cappedBySignature returns a new list keeping at most caps[sig] items of each
+// signature, preserving sort order. Signatures absent from caps are dropped.
+func (l *itemList) cappedBySignature(caps map[itemSignature]int) *itemList {
+	l.ensureSorted()
+	out := make([]Item, 0, len(l.list))
+	used := make(map[itemSignature]int, len(caps))
+	for _, item := range l.list {
+		sig := signatureOf(item)
+		if used[sig] < caps[sig] {
+			used[sig]++
+			out = append(out, item)
+		}
+	}
+	return &itemList{list: out, isSorted: true}
+}
+
+// removeSignatureMultiset removes toRemove[sig] items of each signature. Items
+// of the same signature are interchangeable, so any matching copies are removed
+// and the remaining list stays sorted.
+func (l *itemList) removeSignatureMultiset(toRemove map[itemSignature]int) {
+	if len(toRemove) == 0 {
+		return
+	}
+	l.ensureSorted()
+	remaining := make(map[itemSignature]int, len(toRemove))
+	for sig, n := range toRemove {
+		remaining[sig] = n
+	}
+	out := l.list[:0]
+	for _, item := range l.list {
+		sig := signatureOf(item)
+		if remaining[sig] > 0 {
+			remaining[sig]--
+			continue
+		}
+		out = append(out, item)
+	}
+	l.list = out
+}
+
 // uniformSignature reports whether every item in the list is physically
 // interchangeable, and if so what the common signature is.
 func (l *itemList) uniformSignature() (itemSignature, bool) {
