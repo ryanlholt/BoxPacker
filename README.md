@@ -55,7 +55,7 @@ package main
 import (
     "fmt"
 
-    "github.com/ryanholt/boxpacker"
+    "github.com/ryanlholt/BoxPacker"
 )
 
 func main() {
@@ -98,6 +98,7 @@ types: identity is used to track items through packing.
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
 | `packer.SetQuantityShortCircuit(false)` | Disable the large-quantity replication optimisation |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
+| `packer.SetPackedBoxSorter(sorter)` | Choose which box wins each iteration with a custom objective, e.g. minimising billable shipping weight (see below) |
 | `boxpacker.NewVolumePacker(box, items).Pack()` | Pack as much as possible into one specific box |
 
 ### Rotation modes
@@ -105,6 +106,53 @@ types: identity is used to track items through packing.
 - `RotationBestFit` — no restrictions, any of the 6 orientations
 - `RotationKeepFlat` — may turn sideways 90°, but never on its side ("this way up")
 - `RotationNever` — must be packed exactly as dimensioned
+
+### Custom box selection (shipping cost / dim weight)
+
+By default, each packing iteration picks the box that holds the **most items**,
+then the **fullest** by volume. That objective minimises parcel count and wasted
+space, but it isn't always the cheapest to ship: most carriers bill the greater
+of a parcel's actual weight and its **dimensional ("dim") weight**
+(`outerVolume / divisor`), so a large, lightly-filled box can cost more than two
+compact ones.
+
+`SetPackedBoxSorter` replaces the box-selection objective without touching the
+packing geometry. Implement `PackedBoxSorter` (or pass a `PackedBoxSorterFunc`),
+returning `< 0` if `a` is the better box, `> 0` if `b` is, `0` if equal. The
+`BillableWeight` helper computes `max(actualGrossWeight, volumetricWeight)` for a
+packed box, and `VolumetricWeight` computes the dim-weight component alone:
+
+```go
+const divisor = 5000 // e.g. cm dimensions billed in kg; use 139 for inches->lb
+
+packer.SetPackedBoxSorter(boxpacker.PackedBoxSorterFunc(func(a, b *boxpacker.PackedBox) int {
+    aw, bw := boxpacker.BillableWeight(a, divisor), boxpacker.BillableWeight(b, divisor)
+    switch {
+    case aw < bw:
+        return -1
+    case aw > bw:
+        return 1
+    default:
+        return 0 // fall back to the default order, or add your own tie-break
+    }
+}))
+```
+
+Dimensions and the divisor must be in consistent units (and match your item
+weight unit); no carrier-specific rounding is applied, so layer that on top if
+you need it. Passing `nil` restores the default ordering.
+
+Two caveats:
+
+- The solver is still **greedy** — this changes the per-parcel choice, not the
+  global cost across every box, so it won't reason about carrier rate-tier
+  thresholds spanning multiple parcels.
+- The large-quantity short-circuit's *exact-parity* guarantee was established for
+  the default objective, which never prefers a less-full box. A custom sorter
+  that can prefer a less-full box of the same type may make the replicated result
+  differ from a full re-evaluation. Every box produced is still a valid packing;
+  if you need exact parity under such an objective, also call
+  `SetQuantityShortCircuit(false)`.
 
 ### Units
 
@@ -118,8 +166,10 @@ fractions.
 - Adds the large-quantity short-circuit described above.
 - No post-packing weight redistribution between boxes
   (`WeightRedistributor`): box contents are final as packed.
-- No `ConstrainedPlacementItem` (custom placement callbacks), custom sorters,
-  timeout checker, or `packAllPermutations`.
+- Supports a custom `PackedBoxSorter` (like the PHP library), plus
+  `BillableWeight`/`VolumetricWeight` helpers for dim-weight-aware objectives.
+- No `ConstrainedPlacementItem` (custom placement callbacks), timeout checker,
+  or `packAllPermutations`.
 - Errors are returned as values (`*NoBoxesAvailableError`) rather than thrown.
 
 A `Packer` is single-use and not safe for concurrent use; create one per

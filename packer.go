@@ -26,6 +26,7 @@ type Packer struct {
 	boxQuantities        map[Box]int
 	allowPartialResults  bool
 	quantityShortCircuit bool
+	boxSorter            PackedBoxSorter
 }
 
 // NewPacker creates an empty Packer. The quantity short-circuit optimisation
@@ -35,7 +36,28 @@ func NewPacker() *Packer {
 		items:                &itemList{},
 		boxQuantities:        map[Box]int{},
 		quantityShortCircuit: true,
+		boxSorter:            defaultPackedBoxSorter{},
 	}
+}
+
+// SetPackedBoxSorter replaces the strategy used to choose the best box at each
+// packing iteration, letting callers optimise for a custom objective such as
+// minimising billable shipping weight (see BillableWeight). Passing nil
+// restores the default ordering (most items, then fullest).
+//
+// Note on the quantity short-circuit: its guarantee that the result is
+// identical to packing without the optimisation was established for the default
+// objective, which never prefers a box that holds fewer items. A custom sorter
+// that can prefer a less-full box of the same type may make the short-circuit's
+// replicated solution differ from a full re-evaluation - every box produced is
+// still a valid packing of real items, but if you need exact parity with the
+// non-optimised result under such an objective, disable it with
+// SetQuantityShortCircuit(false).
+func (p *Packer) SetPackedBoxSorter(sorter PackedBoxSorter) {
+	if sorter == nil {
+		sorter = defaultPackedBoxSorter{}
+	}
+	p.boxSorter = sorter
 }
 
 // AddItem adds qty copies of an item to be packed.
@@ -87,6 +109,10 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
+	if p.boxSorter == nil {
+		p.boxSorter = defaultPackedBoxSorter{}
+	}
+
 	var packedBoxes []*PackedBox
 
 	// Keep going until everything is packed
@@ -127,7 +153,7 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 		}
 
 		// Find the best box of the iteration, and remove the packed items from the unpacked list
-		sort.SliceStable(iteration, func(i, j int) bool { return comparePackedBoxes(iteration[i], iteration[j]) < 0 })
+		sort.SliceStable(iteration, func(i, j int) bool { return p.boxSorter.Compare(iteration[i], iteration[j]) < 0 })
 		best := iteration[0]
 
 		p.items.removePackedItems(best.Items)
