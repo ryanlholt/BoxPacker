@@ -46,6 +46,17 @@ orders with `packer.SetQuantityShortCircuit(true)`. The included large-quantity
 benchmarks and tests cover both uniform and mixed-SKU workloads and assert a
 quantity-independent number of real packing evaluations.
 
+## Weight redistribution
+
+Like the PHP 3.x packer, `Pack` performs a post-pack pass by default when the
+initial result contains 2 through 12 boxes. It attempts to move items from
+heavier boxes to lighter ones when doing so reduces item-weight variance and
+both resulting item sets can still be packed into one available box. The pass
+never increases box count and respects limited box quantities.
+
+Use `packer.SetMaxBoxesToBalanceWeight(n)` to change the 12-box threshold, or
+pass `0` to disable redistribution and keep the initial greedy box makeup.
+
 ## Usage
 
 ```go
@@ -96,6 +107,7 @@ types: identity is used to track items through packing.
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
 | `packer.SetQuantityShortCircuit(true)` | Enable lookahead-safe work bounding and, with the built-in sorter, guarded box replication for large quantities |
+| `packer.SetMaxBoxesToBalanceWeight(n)` | Rebalance results containing at most `n` boxes by weight; use `0` to disable |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
 | `packer.SetPackedBoxSorter(sorter)` | Choose which box wins each iteration with a custom objective, e.g. minimising billable shipping weight (see below) |
 | `boxpacker.NewVolumePacker(box, items).Pack()` | Pack as much as possible into one specific box |
@@ -160,8 +172,8 @@ fractions.
 ## Differences from the PHP library
 
 - Adds the opt-in large-quantity short-circuit described above.
-- No post-packing weight redistribution between boxes
-  (`WeightRedistributor`): box contents are final as packed.
+- Includes PHP-compatible post-packing weight redistribution for results of up
+  to 12 boxes by default.
 - Supports a custom `PackedBoxSorter` (like the PHP library), plus
   `BillableWeight`/`VolumetricWeight` helpers for dim-weight-aware objectives.
 - No `ConstrainedPlacementItem` (custom placement callbacks), timeout checker,

@@ -142,6 +142,7 @@ func TestMultipleBoxTypes(t *testing.T) {
 func TestPHPFirstItemOrientationParity(t *testing.T) {
 	packer := NewPacker()
 	packer.SetQuantityShortCircuit(false)
+	packer.SetMaxBoxesToBalanceWeight(0)
 	packer.AddBox(NewBox("small", 107, 118, 125, 0, 107, 118, 125, 1_000_000))
 	packer.AddBox(NewBox("large", 170, 160, 150, 0, 170, 160, 150, 1_000_000))
 	packer.AddItem(NewItem("SKU0", 45, 92, 54, 322, RotationBestFit), 9)

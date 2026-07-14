@@ -21,22 +21,24 @@ func (e *NoBoxesAvailableError) Error() string {
 // Packer packs items into boxes, choosing box sizes using built-in heuristics
 // for the best overall solution.
 type Packer struct {
-	items                 *itemList
-	boxes                 []Box
-	boxQuantities         map[Box]int
-	allowPartialResults   bool
-	quantityShortCircuit  bool
-	boxSorter             PackedBoxSorter
-	boxEvaluationObserver func(Box)
+	items                   *itemList
+	boxes                   []Box
+	boxQuantities           map[Box]int
+	allowPartialResults     bool
+	quantityShortCircuit    bool
+	maxBoxesToBalanceWeight int
+	boxSorter               PackedBoxSorter
+	boxEvaluationObserver   func(Box)
 }
 
 // NewPacker creates an empty Packer. The quantity short-circuit optimisation
 // is disabled by default and can be enabled with SetQuantityShortCircuit.
 func NewPacker() *Packer {
 	return &Packer{
-		items:         &itemList{},
-		boxQuantities: map[Box]int{},
-		boxSorter:     defaultPackedBoxSorter{},
+		items:                   &itemList{},
+		boxQuantities:           map[Box]int{},
+		maxBoxesToBalanceWeight: 12,
+		boxSorter:               defaultPackedBoxSorter{},
 	}
 }
 
@@ -94,6 +96,18 @@ func (p *Packer) SetQuantityShortCircuit(enabled bool) {
 	p.quantityShortCircuit = enabled
 }
 
+// MaxBoxesToBalanceWeight returns the largest result on which post-pack weight
+// redistribution is attempted. The default is 12 boxes.
+func (p *Packer) MaxBoxesToBalanceWeight() int {
+	return p.maxBoxesToBalanceWeight
+}
+
+// SetMaxBoxesToBalanceWeight sets the largest result on which post-pack weight
+// redistribution is attempted. Set zero to disable redistribution.
+func (p *Packer) SetMaxBoxesToBalanceWeight(maxBoxes int) {
+	p.maxBoxesToBalanceWeight = maxBoxes
+}
+
 // UnpackedItems returns the items that have not (yet) been packed.
 func (p *Packer) UnpackedItems() []Item {
 	return p.items.toSlice()
@@ -101,6 +115,23 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
+	packedBoxes, err := p.packBasic(false)
+	if err != nil {
+		return packedBoxes, err
+	}
+	if len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
+		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities)
+		packedBoxes = redistributor.redistributeWeight(packedBoxes)
+	}
+	return packedBoxes, nil
+}
+
+// packBasic performs the greedy packing pass without post-pack weight
+// redistribution. When enforceSingleBox is true, boxes that cannot hold the
+// entire remaining item volume are not candidates and an unpackable tail is
+// returned without error. Weight redistribution uses this mode to test whether
+// a proposed item set can still be packed into one box.
+func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 	if p.boxSorter == nil {
 		p.boxSorter = defaultPackedBoxSorter{}
 	}
@@ -113,7 +144,7 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 		// works on its own clone of the item list, so evaluations are
 		// independent. Results are kept in candidate order (smallest box
 		// first) so that tie-breaking matches sequential evaluation.
-		candidates := p.candidateBoxes()
+		candidates := p.candidateBoxes(enforceSingleBox)
 		p.items.ensureSorted() // so the per-candidate clones don't each re-sort
 		signatureCounts := p.items.signatureCounts()
 		results := make([]*PackedBox, len(candidates))
@@ -141,7 +172,7 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 		}
 
 		if len(iteration) == 0 {
-			if p.allowPartialResults {
+			if p.allowPartialResults || enforceSingleBox {
 				break
 			}
 			return packedBoxes, &NoBoxesAvailableError{Item: p.items.top()}
@@ -320,7 +351,7 @@ func perBoxCapacity(box Box, sig itemSignature) int {
 // candidateBoxes returns a "smart" ordering of the boxes to try packing items
 // into: smallest first, but boxes that cannot possibly hold the entire
 // remaining set of items by volume are evaluated last.
-func (p *Packer) candidateBoxes() []Box {
+func (p *Packer) candidateBoxes(enforceSingleBox bool) []Box {
 	sorted := make([]Box, len(p.boxes))
 	copy(sorted, p.boxes)
 	sort.SliceStable(sorted, func(i, j int) bool { return compareBoxes(sorted[i], sorted[j]) < 0 })
@@ -334,7 +365,7 @@ func (p *Packer) candidateBoxes() []Box {
 		}
 		if boxInnerVolume(box) >= remainingVolume {
 			preferred = append(preferred, box)
-		} else {
+		} else if !enforceSingleBox {
 			other = append(other, box)
 		}
 	}

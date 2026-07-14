@@ -12,6 +12,9 @@
 // candidate ordering remain unchanged. Custom sorters retain bounded
 // evaluations but disable replication. This keeps large single- and mixed-SKU
 // quantities fast without using a separate approximate packing heuristic.
+// Results containing two through twelve boxes are rebalanced by item weight by
+// default, matching the PHP packer's post-pack redistribution behavior; the
+// threshold is configurable and can be set to zero to disable redistribution.
 //
 // Dimensions are unit-agnostic but must be consistent, and must be integers
 // (the reference implementation recommends millimetres and grams). Item and
