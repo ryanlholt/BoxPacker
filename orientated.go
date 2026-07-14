@@ -198,6 +198,12 @@ func generatePermutations(item Item, prevItem *orientatedItem) [][3]int {
 // available space and the dimensions of the upcoming items.
 var lookaheadCache sync.Map // string -> int
 
+// orientationLookaheadDepth is the maximum number of upcoming items used to
+// score an orientation. Quantity capping must retain at least this much
+// headroom beyond physical box capacity so capped and uncapped evaluations see
+// the same window at every placement decision.
+const orientationLookaheadDepth = 8
+
 // orientatedItemSorter decides which of two orientations is the better choice
 // for the current packing context.
 type orientatedItemSorter struct {
@@ -286,7 +292,7 @@ func (s *orientatedItemSorter) additionalItemsPacked(prev *orientatedItem) int {
 	}
 
 	currentRowLength := maxInt(prev.length, s.rowLength)
-	itemsToPack := s.nextItems.topN(8) // cap lookahead as this gets recursive and slow
+	itemsToPack := s.nextItems.topN(orientationLookaheadDepth) // cap lookahead as this gets recursive and slow
 
 	var key strings.Builder
 	for _, v := range []int{s.widthLeft, s.lengthLeft, prev.width, prev.length, currentRowLength, s.depthLeft} {

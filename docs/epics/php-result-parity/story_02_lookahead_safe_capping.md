@@ -1,5 +1,7 @@
 # S-2: Make per-box quantity capping lookahead-safe
 
+Status: Complete
+
 ## Goal
 
 Bound large quantities without changing the up-to-eight-item lookahead window
@@ -15,12 +17,22 @@ used to select orientations.
 
 ## Acceptance criteria
 
-- [ ] Capped and uncapped evaluation produce identical canonical placements
+- [x] Capped and uncapped evaluation produce identical canonical placements
   when physical capacity is below the lookahead depth.
-- [ ] Capping work remains independent of total quantity.
-- [ ] Zero-volume, zero-weight, and overweight capacity calculations remain
+- [x] Capping work remains independent of total quantity.
+- [x] Zero-volume, zero-weight, and overweight capacity calculations remain
   safe.
-- [ ] `go test ./...` passes.
+- [x] `go test ./...` passes.
+
+## Verification completed
+
+- The PHP fork's capacity-below-lookahead fixture failed before the change and
+  passed after adding physical capacity plus eight items of headroom.
+- Direct bounded-list tests cover quantities of 100 and 100,000 with the same
+  evaluation size.
+- Direct capacity tests cover zero-volume, zero-weight, and overweight items.
+- `go test ./...`
+- `go test -race ./...`
 
 ## Dependencies
 

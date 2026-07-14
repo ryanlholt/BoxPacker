@@ -237,33 +237,24 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 }
 
 // itemsForBoxEvaluation bounds the work done per box evaluation. A box can never
-// hold more items of a given type than its volume and weight allow, so for each
-// distinct item type only that many copies need to be handed to the packer -
-// the total remaining quantity is irrelevant to how one box packs. Capping per
-// signature keeps each evaluation cheap even when the pool holds a large mix of
-// different item types. signatureCounts is the pool's precomputed
-// signature->count map, shared across all candidate boxes in this iteration.
+// hold more items of a given type than its volume and weight allow, but the
+// orientation sorter also looks ahead at upcoming items. Retaining physical
+// capacity plus orientationLookaheadDepth copies per signature ensures that
+// capped and uncapped evaluations see the same lookahead window throughout the
+// pack while keeping work independent of total order quantity. signatureCounts
+// is the pool's precomputed signature->count map, shared across all candidate
+// boxes in this iteration.
 func (p *Packer) itemsForBoxEvaluation(box Box, signatureCounts map[itemSignature]int) *itemList {
 	if !p.quantityShortCircuit || len(signatureCounts) == 0 {
 		return p.items
 	}
 
-	innerVolume := boxInnerVolume(box)
-	netWeight := box.MaxWeight() - box.EmptyWeight()
-
 	caps := make(map[itemSignature]int, len(signatureCounts))
 	needsCap := false
 	for sig, have := range signatureCounts {
-		unitVolume := maxInt(sig.width*sig.length*sig.depth, 1)
-		capacity := innerVolume / unitVolume
-		if sig.weight > 0 {
-			capacity = minInt(capacity, netWeight/sig.weight)
-		}
-		if capacity < 0 {
-			capacity = 0
-		}
-		caps[sig] = capacity
-		if capacity < have {
+		cap := perBoxCapacity(box, sig) + orientationLookaheadDepth
+		caps[sig] = cap
+		if cap < have {
 			needsCap = true
 		}
 	}
@@ -271,6 +262,18 @@ func (p *Packer) itemsForBoxEvaluation(box Box, signatureCounts map[itemSignatur
 		return p.items
 	}
 	return p.items.cappedBySignature(caps)
+}
+
+// perBoxCapacity is an upper bound on how many copies of an item signature a
+// box could hold by volume and weight. Geometry may lower the real capacity,
+// but can never raise it.
+func perBoxCapacity(box Box, sig itemSignature) int {
+	unitVolume := maxInt(sig.width*sig.length*sig.depth, 1)
+	capacity := boxInnerVolume(box) / unitVolume
+	if sig.weight > 0 {
+		capacity = minInt(capacity, (box.MaxWeight()-box.EmptyWeight())/sig.weight)
+	}
+	return maxInt(capacity, 0)
 }
 
 // candidateBoxes returns a "smart" ordering of the boxes to try packing items

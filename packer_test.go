@@ -3,6 +3,9 @@ package boxpacker
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,6 +48,26 @@ func totalPackedItems(boxes []*PackedBox) int {
 		total += len(box.Items)
 	}
 	return total
+}
+
+// canonicalPacking describes physical packing while ignoring the order in
+// which boxes and packed items are returned.
+func canonicalPacking(boxes []*PackedBox) []string {
+	boxSignatures := make([]string, 0, len(boxes))
+	for _, box := range boxes {
+		itemSignatures := make([]string, 0, len(box.Items))
+		for _, item := range box.Items {
+			itemSignatures = append(itemSignatures, fmt.Sprintf(
+				"%s:%d:%d:%d:%d:%d:%d",
+				item.Item.Description(), item.X, item.Y, item.Z,
+				item.Width, item.Length, item.Depth,
+			))
+		}
+		sort.Strings(itemSignatures)
+		boxSignatures = append(boxSignatures, box.Box.Reference()+"#"+strings.Join(itemSignatures, "|"))
+	}
+	sort.Strings(boxSignatures)
+	return boxSignatures
 }
 
 func TestPackSingleBox(t *testing.T) {
@@ -283,6 +306,89 @@ func TestQuantityShortCircuitEquivalence(t *testing.T) {
 	}
 	if got := totalPackedItems(withSC); got != 37 {
 		t.Fatalf("expected 37 items packed, got %d", got)
+	}
+}
+
+func TestQuantityCappingPreservesLookaheadWindow(t *testing.T) {
+	pack := func(shortCircuit bool) []*PackedBox {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.AddBox(NewBox("Box", 154, 85, 149, 22, 154, 85, 149, 5772))
+		// Weight limits this box to four items, below the orientation lookahead
+		// depth, while seven copies are available to the uncapped evaluation.
+		packer.AddItem(NewItem("Big", 56, 40, 70, 1300, RotationBestFit), 7)
+
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return packed
+	}
+
+	withoutShortCircuit := canonicalPacking(pack(false))
+	withShortCircuit := canonicalPacking(pack(true))
+	if !slices.Equal(withShortCircuit, withoutShortCircuit) {
+		t.Fatalf("quantity capping changed physical packing:\nwithout: %v\nwith:    %v", withoutShortCircuit, withShortCircuit)
+	}
+}
+
+func TestItemsForBoxEvaluationUsesBoundedHeadroom(t *testing.T) {
+	box := NewBox("bounded", 10, 10, 10, 0, 10, 10, 10, 100)
+	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
+	packer.AddItem(NewItem("zero-volume", 0, 1, 1, 0, RotationBestFit), 2_000)
+	packer.AddItem(NewItem("zero-weight", 10, 10, 10, 0, RotationBestFit), 20)
+	packer.AddItem(NewItem("overweight", 1, 1, 1, 101, RotationBestFit), 20)
+
+	capped := packer.itemsForBoxEvaluation(box, packer.items.signatureCounts())
+	counts := capped.signatureCounts()
+
+	tests := []struct {
+		item Item
+		want int
+	}{
+		// Zero volume is treated as unit volume: 1000 capacity + 8 headroom.
+		{NewItem("zero-volume", 0, 1, 1, 0, RotationBestFit), 1_008},
+		// Zero weight leaves volume as the binding limit: 1 + 8 headroom.
+		{NewItem("zero-weight", 10, 10, 10, 0, RotationBestFit), 9},
+		// An overweight item has zero physical capacity but retains the window.
+		{NewItem("overweight", 1, 1, 1, 101, RotationBestFit), 8},
+	}
+	for _, test := range tests {
+		if got := counts[signatureOf(test.item)]; got != test.want {
+			t.Errorf("%s capped count = %d, want %d", test.item.Description(), got, test.want)
+		}
+	}
+}
+
+func TestItemsForBoxEvaluationReturnsOriginalWhenNoCapIsNeeded(t *testing.T) {
+	box := NewBox("roomy", 10, 10, 10, 0, 10, 10, 10, 100)
+	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
+	packer.AddItem(NewItem("small", 5, 5, 5, 1, RotationBestFit), 2)
+
+	if got := packer.itemsForBoxEvaluation(box, packer.items.signatureCounts()); got != packer.items {
+		t.Fatal("expected the original item list when no signature needs capping")
+	}
+}
+
+func TestItemsForBoxEvaluationBoundIsIndependentOfQuantity(t *testing.T) {
+	box := NewBox("bounded", 10, 10, 10, 0, 10, 10, 10, 1_000_000)
+	item := NewItem("unit-cube", 5, 5, 5, 1, RotationBestFit)
+	evaluationCount := func(quantity int) int {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(true)
+		packer.AddItem(item, quantity)
+		bounded := packer.itemsForBoxEvaluation(box, packer.items.signatureCounts())
+		return bounded.count()
+	}
+
+	want := 8 + orientationLookaheadDepth // physical capacity plus headroom
+	if got := evaluationCount(100); got != want {
+		t.Fatalf("100-item evaluation count = %d, want %d", got, want)
+	}
+	if got := evaluationCount(100_000); got != want {
+		t.Fatalf("100000-item evaluation count = %d, want %d", got, want)
 	}
 }
 
