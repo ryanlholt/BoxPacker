@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -329,6 +330,100 @@ func TestQuantityCappingPreservesLookaheadWindow(t *testing.T) {
 	withShortCircuit := canonicalPacking(pack(true))
 	if !slices.Equal(withShortCircuit, withoutShortCircuit) {
 		t.Fatalf("quantity capping changed physical packing:\nwithout: %v\nwith:    %v", withoutShortCircuit, withShortCircuit)
+	}
+}
+
+// TestQuantityReplicationPreservesDepletedPoolOrientations ports the PHP
+// fork's regression where cloning a full box after the bounded pool has begun
+// shrinking changes the physical orientation of a later box.
+func TestQuantityReplicationPreservesDepletedPoolOrientations(t *testing.T) {
+	pack := func(shortCircuit bool) []*PackedBox {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.AddBox(NewBox("Box", 68, 74, 40, 0, 68, 74, 40, 4_280))
+		packer.AddItem(NewItem("Widget", 33, 30, 22, 1_151, RotationBestFit), 11)
+
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return packed
+	}
+
+	withoutShortCircuit := canonicalPacking(pack(false))
+	withShortCircuit := canonicalPacking(pack(true))
+	if !slices.Equal(withShortCircuit, withoutShortCircuit) {
+		t.Fatalf("replication changed depleted-pool packing:\nwithout: %v\nwith:    %v", withoutShortCircuit, withShortCircuit)
+	}
+}
+
+func TestQuantityReplicationHonoursLimitedBoxSupply(t *testing.T) {
+	type result struct {
+		packed   []*PackedBox
+		unpacked int
+	}
+	pack := func(shortCircuit bool) result {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.AllowPartialResults(true)
+		packer.AddBox(NewLimitedSupplyBox("scarce", 60, 60, 60, 0, 50, 50, 50, 1_000, 3))
+		packer.AddItem(NewItem("widget", 45, 45, 45, 100, RotationBestFit), 30)
+
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return result{packed: packed, unpacked: len(packer.UnpackedItems())}
+	}
+
+	withoutShortCircuit := pack(false)
+	withShortCircuit := pack(true)
+	if len(withShortCircuit.packed) != 3 {
+		t.Fatalf("packed %d scarce boxes, want exactly the 3 available", len(withShortCircuit.packed))
+	}
+	if withShortCircuit.unpacked != 27 {
+		t.Fatalf("left %d items unpacked, want 27", withShortCircuit.unpacked)
+	}
+	if !slices.Equal(canonicalPacking(withShortCircuit.packed), canonicalPacking(withoutShortCircuit.packed)) {
+		t.Fatalf("limited-supply packing differs with replication enabled")
+	}
+}
+
+func TestQuantityReplicationEvaluationCountIsQuantityIndependent(t *testing.T) {
+	uniformEvaluations := func(quantity int) int64 {
+		packer := NewPacker()
+		var evaluations atomic.Int64
+		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1_000))
+		packer.AddItem(NewItem("heavy cube", 50, 50, 50, 200, RotationBestFit), quantity)
+		if _, err := packer.Pack(); err != nil {
+			t.Fatalf("uniform quantity %d: unexpected error: %v", quantity, err)
+		}
+		return evaluations.Load()
+	}
+
+	mixedEvaluations := func(quantity int) int64 {
+		packer := NewPacker()
+		var evaluations atomic.Int64
+		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1_000_000))
+		packer.AddItem(NewItem("A slab", 100, 100, 60, 100, RotationBestFit), quantity)
+		packer.AddItem(NewItem("B slab", 100, 100, 40, 80, RotationBestFit), quantity)
+		if _, err := packer.Pack(); err != nil {
+			t.Fatalf("mixed quantity %d: unexpected error: %v", quantity, err)
+		}
+		return evaluations.Load()
+	}
+
+	if small, large := uniformEvaluations(100), uniformEvaluations(10_000); small != large {
+		t.Errorf("uniform evaluations scale with quantity: 100 items = %d, 10000 items = %d", small, large)
+	} else if large > int64(orientationLookaheadDepth+2) {
+		t.Errorf("uniform packing required %d real evaluations, want at most %d", large, orientationLookaheadDepth+2)
+	}
+	if small, large := mixedEvaluations(100), mixedEvaluations(1_000); small != large {
+		t.Errorf("mixed evaluations scale with quantity: 100 pairs = %d, 1000 pairs = %d", small, large)
+	} else if large > int64(orientationLookaheadDepth+2) {
+		t.Errorf("mixed packing required %d real evaluations, want at most %d", large, orientationLookaheadDepth+2)
 	}
 }
 

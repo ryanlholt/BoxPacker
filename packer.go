@@ -21,12 +21,13 @@ func (e *NoBoxesAvailableError) Error() string {
 // Packer packs items into boxes, choosing box sizes using built-in heuristics
 // for the best overall solution.
 type Packer struct {
-	items                *itemList
-	boxes                []Box
-	boxQuantities        map[Box]int
-	allowPartialResults  bool
-	quantityShortCircuit bool
-	boxSorter            PackedBoxSorter
+	items                 *itemList
+	boxes                 []Box
+	boxQuantities         map[Box]int
+	allowPartialResults   bool
+	quantityShortCircuit  bool
+	boxSorter             PackedBoxSorter
+	boxEvaluationObserver func(Box)
 }
 
 // NewPacker creates an empty Packer. The quantity short-circuit optimisation
@@ -133,6 +134,9 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 			wg.Add(1)
 			go func(i int, packer *volumePacker) {
 				defer wg.Done()
+				if p.boxEvaluationObserver != nil {
+					p.boxEvaluationObserver(packer.box)
+				}
 				results[i] = packer.pack()
 			}(i, packer)
 		}
@@ -169,20 +173,18 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 }
 
 // replicateIdenticalBoxes is the large-quantity short-circuit. The box just
-// packed is the winner of a full evaluation of the current pool. As long as the
-// pool can supply another full copy of that box's exact item makeup - with
-// strictly more than one boxful of every component item type still remaining -
-// re-evaluating would deterministically reproduce the very same box, because no
-// box can pack more items than were available a moment ago and every losing box
-// can only pack fewer once items are removed. So the winning configuration is
-// replicated directly instead of being re-solved.
+// packed is the winner of a full evaluation of the current bounded pool. It can
+// be copied only while every iteration it replaces would retain that same
+// bounded pool for every item signature in the template. The bound is the
+// largest physical capacity of any currently available box plus the orientation
+// lookahead window.
 //
 // This handles a winning box made up of a mix of different item types, not just
 // a single type: the multiset of item signatures is what gets replicated.
 //
-// Replication stops while strictly more than one boxful of any component
-// remains: the final box may be only partially full, and a smaller box type
-// might suit the remainder better, so the tail goes through normal evaluation.
+// Once any component drops below that floor, placement or box selection may
+// change as the pool depletes, so the shrinking tail goes through normal
+// evaluation.
 func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	perBox := len(template.Items)
 	if perBox == 0 || p.boxQuantities[template.Box] <= 0 {
@@ -196,17 +198,27 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	}
 	poolCounts := p.items.signatureCounts()
 
-	// How many further identical boxes the pool can supply while still leaving
-	// strictly more than one boxful of every component for the tail.
+	// A prospective replica replaces an iteration whose pre-pack pool must still
+	// contain the full bounded evaluation window for every component signature.
+	// Use the maximum capacity across all box types that remain in stock because
+	// every one of them would be evaluated in that iteration.
 	replications := p.boxQuantities[template.Box]
 	for sig, need := range boxCounts {
 		have := poolCounts[sig]
-		if have <= need {
+		maxCapacity := 0
+		for _, candidate := range p.boxes {
+			if p.boxQuantities[candidate] > 0 {
+				maxCapacity = maxInt(maxCapacity, perBoxCapacity(candidate, sig))
+			}
+		}
+
+		mustRemain := maxCapacity + orientationLookaheadDepth
+		if have < mustRemain {
 			return nil
 		}
-		// largest k with have-(k-1)*need > need, i.e. k boxfuls can be carved
-		// out and more than one boxful still remains.
-		if k := (have-need-1)/need + 1; k < replications {
+		// Largest k for which the kth replaced iteration begins with at least
+		// mustRemain copies: have-(k-1)*need >= mustRemain.
+		if k := (have-mustRemain)/need + 1; k < replications {
 			replications = k
 		}
 	}
