@@ -5,14 +5,13 @@
 // (https://github.com/dvdoug/boxpacker), using the same layer-based packing
 // heuristics, item orientation selection and box selection strategy.
 //
-// In addition to the PHP algorithm, this implementation short-circuits
-// packing of large quantities. Each box evaluation only considers as many of
-// each item type as that box could physically hold, and once a box has been
-// solved its exact item makeup - whether a single item type or a mix of
-// several - is replicated for as long as the pool can supply more identical
-// boxfuls, rather than re-solved from scratch. This keeps packing of very
-// large quantities (tens or hundreds of thousands of units), across one or
-// many distinct item types, fast.
+// In addition to the PHP algorithm, this implementation offers an opt-in
+// short-circuit for packing large quantities. Each box evaluation considers a
+// bounded, lookahead-safe number of each item type. With the built-in box
+// sorter, solved boxes can also be replicated while the evaluation inputs and
+// candidate ordering remain unchanged. Custom sorters retain bounded
+// evaluations but disable replication. This keeps large single- and mixed-SKU
+// quantities fast without using a separate approximate packing heuristic.
 //
 // Dimensions are unit-agnostic but must be consistent, and must be integers
 // (the reference implementation recommends millimetres and grams). Item and

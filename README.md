@@ -25,27 +25,26 @@ Naively, packing N items costs N/boxCapacity full packing solves —
 quadratic-ish behaviour that gets unreasonable at e-commerce quantities. This
 port short-circuits that with two cooperating optimisations:
 
-- **Per-type work-bounding.** Each box evaluation is capped to the number of
-  items of each type that could physically fit by volume and weight, so the
+- **Per-type work-bounding.** Each box evaluation is capped to physical
+  capacity by volume and weight plus the orientation lookahead window, so the
   size of the order doesn't affect the cost of solving one box — even when the
   order mixes many distinct item types.
-- **Box replication.** Once a box has been solved, its exact item makeup is
-  **replicated** for subsequent boxes instead of re-solved. This works for a
-  winning box made up of a *mix* of item types, not just a single type: the
-  multiset of items is what gets replicated.
+- **Box replication.** With the built-in sorter, a solved box's exact item
+  makeup can be **replicated** for subsequent boxes while the safety guards
+  hold. This works for a winning box made up of a *mix* of item types, not just
+  a single type: the multiset of items is what gets replicated.
 
-The result is exact, not an approximation: while more than one boxful of every
-component item type remains, re-solving would deterministically reproduce the
-box just packed (no box can pack more items than were available a moment ago,
-and every alternative can only pack fewer once items are removed), so
-replication and re-solving give the same answer. The final partial box still
-goes through normal evaluation, so it can land in a smaller box where
-appropriate.
+The optimisation is deliberately conservative. Replication is used only with
+the exact built-in box sorter, while every replaced iteration would see the
+same bounded item inputs and the same preferred-box candidate partition. The
+shrinking tail is solved normally. Custom sorters still benefit from bounded
+per-box inputs, but replication is automatically disabled because custom
+tie-breaking can depend on candidate order.
 
-Packing 100,000 identical items into 25,000 boxes takes ~10ms on an Apple M4;
-9,000 items spread across three distinct types packs in ~2ms (versus ~2s
-without the optimisation). The behaviour is on by default and can be disabled
-with `packer.SetQuantityShortCircuit(false)`.
+The short-circuit is disabled by default. Enable it explicitly for large
+orders with `packer.SetQuantityShortCircuit(true)`. The included large-quantity
+benchmarks and tests cover both uniform and mixed-SKU workloads and assert a
+quantity-independent number of real packing evaluations.
 
 ## Usage
 
@@ -96,7 +95,7 @@ types: identity is used to track items through packing.
 | Call | Effect |
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
-| `packer.SetQuantityShortCircuit(false)` | Disable the large-quantity replication optimisation |
+| `packer.SetQuantityShortCircuit(true)` | Enable lookahead-safe work bounding and, with the built-in sorter, guarded box replication for large quantities |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
 | `packer.SetPackedBoxSorter(sorter)` | Choose which box wins each iteration with a custom objective, e.g. minimising billable shipping weight (see below) |
 | `boxpacker.NewVolumePacker(box, items).Pack()` | Pack as much as possible into one specific box |
@@ -147,12 +146,9 @@ Two caveats:
 - The solver is still **greedy** — this changes the per-parcel choice, not the
   global cost across every box, so it won't reason about carrier rate-tier
   thresholds spanning multiple parcels.
-- The large-quantity short-circuit's *exact-parity* guarantee was established for
-  the default objective, which never prefers a less-full box. A custom sorter
-  that can prefer a less-full box of the same type may make the replicated result
-  differ from a full re-evaluation. Every box produced is still a valid packing;
-  if you need exact parity under such an objective, also call
-  `SetQuantityShortCircuit(false)`.
+- When the quantity short-circuit is enabled with a custom sorter, safe per-box
+  item capping remains active but solved-box replication is automatically
+  disabled. No additional option is required for custom-sorter parity.
 
 ### Units
 
@@ -163,7 +159,7 @@ fractions.
 
 ## Differences from the PHP library
 
-- Adds the large-quantity short-circuit described above.
+- Adds the opt-in large-quantity short-circuit described above.
 - No post-packing weight redistribution between boxes
   (`WeightRedistributor`): box contents are final as packed.
 - Supports a custom `PackedBoxSorter` (like the PHP library), plus

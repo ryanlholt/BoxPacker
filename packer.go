@@ -31,13 +31,12 @@ type Packer struct {
 }
 
 // NewPacker creates an empty Packer. The quantity short-circuit optimisation
-// is enabled by default.
+// is disabled by default and can be enabled with SetQuantityShortCircuit.
 func NewPacker() *Packer {
 	return &Packer{
-		items:                &itemList{},
-		boxQuantities:        map[Box]int{},
-		quantityShortCircuit: true,
-		boxSorter:            defaultPackedBoxSorter{},
+		items:         &itemList{},
+		boxQuantities: map[Box]int{},
+		boxSorter:     defaultPackedBoxSorter{},
 	}
 }
 
@@ -46,14 +45,9 @@ func NewPacker() *Packer {
 // minimising billable shipping weight (see BillableWeight). Passing nil
 // restores the default ordering (most items, then fullest).
 //
-// Note on the quantity short-circuit: its guarantee that the result is
-// identical to packing without the optimisation was established for the default
-// objective, which never prefers a box that holds fewer items. A custom sorter
-// that can prefer a less-full box of the same type may make the short-circuit's
-// replicated solution differ from a full re-evaluation - every box produced is
-// still a valid packing of real items, but if you need exact parity with the
-// non-optimised result under such an objective, disable it with
-// SetQuantityShortCircuit(false).
+// When the quantity short-circuit is enabled, a custom sorter continues to use
+// safe per-box item capping, but solved-box replication is disabled because a
+// custom comparison can make the winner depend on candidate evaluation order.
 func (p *Packer) SetPackedBoxSorter(sorter PackedBoxSorter) {
 	if sorter == nil {
 		sorter = defaultPackedBoxSorter{}
@@ -91,14 +85,11 @@ func (p *Packer) AllowPartialResults(allow bool) {
 }
 
 // SetQuantityShortCircuit enables or disables the large-quantity
-// optimisation. When enabled (the default), each box evaluation only considers
-// as many of each item type as that box could physically hold, and once a box
-// has been solved its exact item makeup is replicated for as long as the pool
-// can supply more identical boxfuls - instead of re-solving from scratch. This
-// applies to a winning box made up of a mix of item types, not just a single
-// type, so packing a large quantity of several different items costs roughly
-// the same as packing the handful of distinct box layouts they produce rather
-// than scaling with the total quantity.
+// optimisation. It is disabled by default. When enabled, each box evaluation
+// considers a bounded, lookahead-safe number of each item type. With the exact
+// built-in packed-box sorter, a solved box can also be replicated while the
+// bounded inputs and candidate-box preference partition remain unchanged.
+// Custom sorters receive bounded evaluations but never box replication.
 func (p *Packer) SetQuantityShortCircuit(enabled bool) {
 	p.quantityShortCircuit = enabled
 }
@@ -186,6 +177,13 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 // change as the pool depletes, so the shrinking tail goes through normal
 // evaluation.
 func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
+	// Only the exact built-in sorter has the ordering properties used by this
+	// proof. In particular, a custom sorter may tie candidates whose order then
+	// changes as the preferred-box partition changes.
+	if _, ok := p.boxSorter.(defaultPackedBoxSorter); !ok {
+		return nil
+	}
+
 	perBox := len(template.Items)
 	if perBox == 0 || p.boxQuantities[template.Box] <= 0 {
 		return nil
@@ -197,12 +195,43 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 		boxCounts[signatureOf(item.Item)]++
 	}
 	poolCounts := p.items.signatureCounts()
+	replications := p.boxQuantities[template.Box]
+
+	// Candidate boxes are partitioned before each iteration: boxes large enough
+	// to hold the whole remaining item volume are evaluated first. Replication
+	// must stop before a previously non-preferred box crosses that boundary,
+	// because the new evaluation order can resolve a sorter tie differently.
+	poolVolume := p.items.totalVolume()
+	templateVolume := template.UsedVolume()
+	templateIterationVolume := poolVolume + templateVolume
+	largestNonPreferredBoxVolume := 0
+	hasNonPreferredBox := false
+	for _, candidate := range p.boxes {
+		if p.boxQuantities[candidate] <= 0 {
+			continue
+		}
+		candidateVolume := boxInnerVolume(candidate)
+		if candidateVolume < templateIterationVolume {
+			largestNonPreferredBoxVolume = maxInt(largestNonPreferredBoxVolume, candidateVolume)
+			hasNonPreferredBox = true
+		}
+	}
+	if hasNonPreferredBox {
+		if poolVolume <= largestNonPreferredBoxVolume {
+			return nil
+		}
+		if templateVolume > 0 {
+			possible := (poolVolume-largestNonPreferredBoxVolume-1)/templateVolume + 1
+			if possible < replications {
+				replications = possible
+			}
+		}
+	}
 
 	// A prospective replica replaces an iteration whose pre-pack pool must still
 	// contain the full bounded evaluation window for every component signature.
 	// Use the maximum capacity across all box types that remain in stock because
 	// every one of them would be evaluated in that iteration.
-	replications := p.boxQuantities[template.Box]
 	for sig, need := range boxCounts {
 		have := poolCounts[sig]
 		maxCapacity := 0

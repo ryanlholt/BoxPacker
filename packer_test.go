@@ -310,6 +310,12 @@ func TestQuantityShortCircuitEquivalence(t *testing.T) {
 	}
 }
 
+func TestQuantityShortCircuitIsOptIn(t *testing.T) {
+	if NewPacker().quantityShortCircuit {
+		t.Fatal("NewPacker enabled the quantity short-circuit by default")
+	}
+}
+
 func TestQuantityCappingPreservesLookaheadWindow(t *testing.T) {
 	pack := func(shortCircuit bool) []*PackedBox {
 		packer := NewPacker()
@@ -392,6 +398,7 @@ func TestQuantityReplicationHonoursLimitedBoxSupply(t *testing.T) {
 func TestQuantityReplicationEvaluationCountIsQuantityIndependent(t *testing.T) {
 	uniformEvaluations := func(quantity int) int64 {
 		packer := NewPacker()
+		packer.SetQuantityShortCircuit(true)
 		var evaluations atomic.Int64
 		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
 		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1_000))
@@ -404,6 +411,7 @@ func TestQuantityReplicationEvaluationCountIsQuantityIndependent(t *testing.T) {
 
 	mixedEvaluations := func(quantity int) int64 {
 		packer := NewPacker()
+		packer.SetQuantityShortCircuit(true)
 		var evaluations atomic.Int64
 		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
 		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1_000_000))
@@ -424,6 +432,126 @@ func TestQuantityReplicationEvaluationCountIsQuantityIndependent(t *testing.T) {
 		t.Errorf("mixed evaluations scale with quantity: 100 pairs = %d, 1000 pairs = %d", small, large)
 	} else if large > int64(orientationLookaheadDepth+2) {
 		t.Errorf("mixed packing required %d real evaluations, want at most %d", large, orientationLookaheadDepth+2)
+	}
+}
+
+func TestQuantityReplicationIsDisabledForCustomSorter(t *testing.T) {
+	type result struct {
+		packed      []*PackedBox
+		evaluations int64
+	}
+	pack := func(shortCircuit bool) result {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.SetPackedBoxSorter(PackedBoxSorterFunc(func(_, _ *PackedBox) int { return 0 }))
+		var evaluations atomic.Int64
+		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+		smallBox := NewBox("Small", 1, 1, 9, 0, 1, 1, 9, 10)
+		packer.AddBox(smallBox)
+		packer.AddBox(NewBox("Large", 1, 1, 10, 0, 1, 1, 10, 10))
+		packer.AddItem(NewItem("Item", 1, 1, 1, 10, RotationBestFit), 13)
+		if shortCircuit {
+			bounded := packer.itemsForBoxEvaluation(smallBox, packer.items.signatureCounts())
+			if got := bounded.count(); got != 1+orientationLookaheadDepth {
+				t.Fatalf("custom sorter received %d bounded items, want %d", got, 1+orientationLookaheadDepth)
+			}
+		}
+
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return result{packed: packed, evaluations: evaluations.Load()}
+	}
+
+	withoutShortCircuit := pack(false)
+	withShortCircuit := pack(true)
+	if !slices.Equal(canonicalPacking(withShortCircuit.packed), canonicalPacking(withoutShortCircuit.packed)) {
+		t.Fatalf("custom-sorter packing changed when the short-circuit was enabled")
+	}
+	if withShortCircuit.evaluations != 26 {
+		t.Fatalf("custom sorter used %d candidate evaluations, want 26 real evaluations with no replication", withShortCircuit.evaluations)
+	}
+}
+
+func TestQuantityReplicationStopsAtPreferredBoxBoundary(t *testing.T) {
+	type result struct {
+		packed      []*PackedBox
+		evaluations int64
+	}
+	pack := func(shortCircuit bool) result {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		var evaluations atomic.Int64
+		packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+		packer.AddBox(NewBox("BoxA", 10, 12, 247, 0, 10, 12, 247, 20))
+		packer.AddBox(NewBox("BoxB", 30, 20, 50, 0, 30, 20, 50, 20))
+		packer.AddItem(NewItem("Widget", 10, 10, 10, 10, RotationBestFit), 40)
+
+		packed, err := packer.Pack()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return result{packed: packed, evaluations: evaluations.Load()}
+	}
+
+	withoutShortCircuit := pack(false)
+	withShortCircuit := pack(true)
+	if !slices.Equal(canonicalPacking(withShortCircuit.packed), canonicalPacking(withoutShortCircuit.packed)) {
+		t.Fatalf("packing changed across the preferred-box boundary")
+	}
+	if len(withShortCircuit.packed) != 20 {
+		t.Fatalf("packed %d boxes, want 20", len(withShortCircuit.packed))
+	}
+	// Both box types are in stock throughout, so 14 candidate evaluations are
+	// seven real packing iterations. Crossing the boundary would use fewer.
+	if withShortCircuit.evaluations != 14 {
+		t.Fatalf("used %d candidate evaluations, want 14 so the boundary iteration is solved normally", withShortCircuit.evaluations)
+	}
+}
+
+func TestQuantityReplicationDoesNotReplacePreferenceBoundaryIteration(t *testing.T) {
+	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
+	var evaluations atomic.Int64
+	packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+	packer.AddBox(NewBox("Box", 1, 1, 10, 0, 1, 1, 10, 10))
+	packer.AddItem(NewItem("Item", 1, 1, 1, 10, RotationBestFit), 11)
+
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(packed) != 11 {
+		t.Fatalf("packed %d boxes, want 11", len(packed))
+	}
+	if got := evaluations.Load(); got != 10 {
+		t.Fatalf("used %d real evaluations, want 10 so equality at the boundary is not replicated", got)
+	}
+}
+
+func TestQuantityReplicationZeroVolumeTemplateHasNoPreferenceLimit(t *testing.T) {
+	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
+	packer.AllowPartialResults(true)
+	var evaluations atomic.Int64
+	packer.boxEvaluationObserver = func(Box) { evaluations.Add(1) }
+	packer.AddBox(NewBox("Box", 5, 5, 5, 0, 5, 5, 5, 10))
+	packer.AddItem(NewItem("ZeroVol", 0, 1, 1, 5, RotationBestFit), 1_000)
+	packer.AddItem(NewItem("TooLarge", 6, 6, 6, 1, RotationBestFit), 1)
+
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(packed) != 500 {
+		t.Fatalf("packed %d boxes, want 500", len(packed))
+	}
+	if unpacked := packer.UnpackedItems(); len(unpacked) != 1 || unpacked[0].Description() != "TooLarge" {
+		t.Fatalf("unexpected unpacked items: %v", unpacked)
+	}
+	if got := evaluations.Load(); got > 6 {
+		t.Fatalf("zero-volume template required %d evaluations, want at most 6", got)
 	}
 }
 
@@ -489,6 +617,7 @@ func TestItemsForBoxEvaluationBoundIsIndependentOfQuantity(t *testing.T) {
 
 func TestLargeQuantityCompletesQuickly(t *testing.T) {
 	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
 	// weight allows 4 items per box, so 100k items = 25k boxes
 	packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1000))
 	packer.AddItem(NewItem("heavy cube", 50, 50, 50, 200, RotationBestFit), 100_000)
@@ -515,6 +644,7 @@ func TestLargeQuantityCompletesQuickly(t *testing.T) {
 // takes seconds; with them it must finish near-instantly.
 func TestLargeMixedQuantityCompletesQuickly(t *testing.T) {
 	packer := NewPacker()
+	packer.SetQuantityShortCircuit(true)
 	packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 100_000))
 	packer.AddItem(NewItem("A", 50, 50, 50, 50, RotationBestFit), 4_000)
 	packer.AddItem(NewItem("B", 40, 40, 40, 40, RotationBestFit), 4_000)
@@ -684,6 +814,7 @@ func TestManyBoxTypesParallelEvaluation(t *testing.T) {
 func BenchmarkLargeQuantity(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		packer := NewPacker()
+		packer.SetQuantityShortCircuit(true)
 		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 1000))
 		packer.AddItem(NewItem("heavy cube", 50, 50, 50, 200, RotationBestFit), 100_000)
 		if _, err := packer.Pack(); err != nil {
@@ -695,6 +826,7 @@ func BenchmarkLargeQuantity(b *testing.B) {
 func BenchmarkLargeMixedQuantity(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		packer := NewPacker()
+		packer.SetQuantityShortCircuit(true)
 		packer.AddBox(NewBox("cube", 110, 110, 110, 100, 100, 100, 100, 100_000))
 		packer.AddItem(NewItem("A", 50, 50, 50, 50, RotationBestFit), 3_000)
 		packer.AddItem(NewItem("B", 40, 40, 40, 40, RotationBestFit), 3_000)
