@@ -769,6 +769,76 @@ func TestPackedBoxAccessors(t *testing.T) {
 	}
 }
 
+func TestVolumeUtilisationUsesPHPOneDecimalRounding(t *testing.T) {
+	box := NewBox("thirds", 1, 1, 3, 0, 1, 1, 3, 100)
+	items := &packedItemList{}
+	items.insert(&PackedItem{Item: NewItem("unit", 1, 1, 1, 1, RotationBestFit), Width: 1, Length: 1, Depth: 1})
+	packed := newPackedBox(box, items)
+
+	if got := packed.VolumeUtilisation(); got != 33.3 {
+		t.Fatalf("VolumeUtilisation = %v, want PHP-rounded 33.3", got)
+	}
+}
+
+func TestRoundedUtilisationControlsCandidateTie(t *testing.T) {
+	packer := NewPacker()
+	packer.SetMaxBoxesToBalanceWeight(0)
+	packer.AddBox(NewBox("BoxA", 10, 12, 247, 0, 10, 12, 247, 20))
+	packer.AddBox(NewBox("BoxB", 30, 20, 50, 0, 30, 20, 50, 20))
+	packer.AddItem(NewItem("Widget", 10, 10, 10, 10, RotationBestFit), 30)
+
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	boxCounts := make(map[string]int)
+	for _, box := range packed {
+		boxCounts[box.Box.Reference()]++
+	}
+	if boxCounts["BoxB"] != 1 || boxCounts["BoxA"] != 14 {
+		t.Fatalf("rounded candidate tie produced %v, want 14 BoxA and 1 BoxB", boxCounts)
+	}
+}
+
+func TestPackedItemsUsePHPVolumeWeightOrder(t *testing.T) {
+	packer := NewPacker()
+	packer.AddBox(NewBox("Box", 10, 10, 10, 0, 10, 10, 10, 1_000))
+	packer.AddItem(NewItem("small-light", 2, 2, 2, 1, RotationBestFit), 1)
+	packer.AddItem(NewItem("large", 3, 3, 3, 1, RotationBestFit), 1)
+	packer.AddItem(NewItem("small-heavy", 2, 2, 2, 2, RotationBestFit), 1)
+
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	descriptions := make([]string, len(packed[0].Items))
+	for i, item := range packed[0].Items {
+		descriptions[i] = item.Item.Description()
+	}
+	if want := []string{"large", "small-heavy", "small-light"}; !slices.Equal(descriptions, want) {
+		t.Fatalf("packed item order = %v, want %v", descriptions, want)
+	}
+}
+
+func TestPackedBoxesUseActiveSorterWhenRedistributionIsDisabled(t *testing.T) {
+	packer := NewPacker()
+	packer.SetMaxBoxesToBalanceWeight(0)
+	packer.SetPackedBoxSorter(PackedBoxSorterFunc(func(a, b *PackedBox) int {
+		return a.ItemWeight() - b.ItemWeight()
+	}))
+	packer.AddBox(NewBox("Box", 1, 1, 3, 0, 1, 1, 3, 3))
+	packer.AddItem(NewItem("Item", 1, 1, 1, 1, RotationBestFit), 4)
+
+	packed, err := packer.Pack()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	weights := []int{packed[0].ItemWeight(), packed[1].ItemWeight()}
+	if !slices.Equal(weights, []int{1, 3}) {
+		t.Fatalf("packed box order = %v, want active-sorter order [1 3]", weights)
+	}
+}
+
 // TestManyBoxTypesParallelEvaluation exercises the parallel box-evaluation
 // path with enough box types to fan out, and checks the smallest adequate box
 // still wins deterministically.

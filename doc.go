@@ -15,6 +15,9 @@
 // Results containing two through twelve boxes are rebalanced by item weight by
 // default, matching the PHP packer's post-pack redistribution behavior; the
 // threshold is configurable and can be set to zero to disable redistribution.
+// Returned boxes follow the active PackedBoxSorter, packed items are ordered by
+// original volume and weight, and volume utilization is rounded to one decimal
+// place, matching the observable PHP 3.x result semantics.
 //
 // Dimensions are unit-agnostic but must be consistent, and must be integers
 // (the reference implementation recommends millimetres and grams). Item and

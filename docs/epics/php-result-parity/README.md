@@ -1,5 +1,7 @@
 # PHP result parity
 
+Status: Complete
+
 ## Objective
 
 Make the Go packer reproduce the packing decisions of the
@@ -63,16 +65,28 @@ documentation until all three are complete.
 
 ## Epic acceptance criteria
 
-- [ ] The shared-feature cross-language corpus produces identical canonical
+- [x] The shared-feature cross-language corpus produces identical canonical
   physical packings.
-- [ ] Quantity short-circuit on and off produce identical canonical physical
+- [x] Quantity short-circuit on and off produce identical canonical physical
   packings across hand-picked regressions and a seeded differential suite.
-- [ ] Large single- and mixed-SKU quantities remain quantity-independent in
+- [x] Large single- and mixed-SKU quantities remain quantity-independent in
   the number of real box evaluations performed.
-- [ ] Default PHP weight redistribution, utilization rounding, and result
+- [x] Default PHP weight redistribution, utilization rounding, and result
   ordering are represented or explicitly configurable in Go.
-- [ ] The README describes guarantees and differences that are true of the
+- [x] The README describes guarantees and differences that are true of the
   verified implementation.
+
+## Final verification
+
+- Checked-in ordered PHP corpus covering shared rotation, weight, box-selection,
+  redistribution, and limited-supply behavior.
+- External 100-case PHP/Go corpus: 100 exact canonical physical-packing matches.
+- Checked-in 100-case and extended 500-case short-circuit differentials: zero
+  physical-packing or box-count differences.
+- Quantity-independent real evaluation counts for large uniform and mixed-SKU
+  workloads.
+- `go test ./...`
+- `go test -race ./...`
 
 ## Verification approach
 

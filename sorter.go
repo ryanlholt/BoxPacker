@@ -27,8 +27,9 @@ type PackedBoxSorterFunc func(a, b *PackedBox) int
 func (f PackedBoxSorterFunc) Compare(a, b *PackedBox) int { return f(a, b) }
 
 // defaultPackedBoxSorter reproduces the library's built-in ordering: most items
-// first, then highest volume utilisation, then most used volume. It matches the
-// PHP DefaultPackedBoxSorter and is used when no custom sorter is set.
+// first, then highest one-decimal volume utilisation, then most used volume. It
+// matches the PHP DefaultPackedBoxSorter and is used when no custom sorter is
+// set.
 type defaultPackedBoxSorter struct{}
 
 // Compare implements PackedBoxSorter.

@@ -1,0 +1,623 @@
+{
+    "source": {
+        "repository": "https://github.com/ryanlholt/DvdBoxPacker",
+        "branch": "3.x-quantity-short-circuit",
+        "commit": "ec5663dac4a7630368296ab87800db48a2e2d67a"
+    },
+    "scenarios": [
+        {
+            "name": "core_best_fit_and_keep_flat",
+            "max_boxes_to_balance_weight": 0,
+            "boxes": [
+                {
+                    "reference": "Small",
+                    "outer_width": 107,
+                    "outer_length": 118,
+                    "outer_depth": 125,
+                    "empty_weight": 0,
+                    "inner_width": 107,
+                    "inner_length": 118,
+                    "inner_depth": 125,
+                    "max_weight": 1000000,
+                    "quantity": null
+                },
+                {
+                    "reference": "Large",
+                    "outer_width": 170,
+                    "outer_length": 160,
+                    "outer_depth": 150,
+                    "empty_weight": 0,
+                    "inner_width": 170,
+                    "inner_length": 160,
+                    "inner_depth": 150,
+                    "max_weight": 1000000,
+                    "quantity": null
+                }
+            ],
+            "items": [
+                {
+                    "description": "SKU0",
+                    "width": 45,
+                    "length": 92,
+                    "depth": 54,
+                    "weight": 322,
+                    "rotation": "best_fit",
+                    "quantity": 9
+                },
+                {
+                    "description": "SKU1",
+                    "width": 55,
+                    "length": 70,
+                    "depth": 41,
+                    "weight": 376,
+                    "rotation": "keep_flat",
+                    "quantity": 4
+                }
+            ],
+            "expected_boxes": [
+                {
+                    "reference": "Large",
+                    "volume_utilisation": 57.1,
+                    "items": [
+                        {
+                            "description": "SKU0",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 45,
+                            "y": 0,
+                            "z": 0,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 90,
+                            "y": 0,
+                            "z": 0,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 0,
+                            "y": 0,
+                            "z": 54,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 45,
+                            "y": 0,
+                            "z": 54,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 90,
+                            "y": 0,
+                            "z": 54,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 0,
+                            "y": 92,
+                            "z": 54,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 45,
+                            "y": 92,
+                            "z": 54,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 90,
+                            "y": 92,
+                            "z": 54,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 0,
+                            "y": 92,
+                            "z": 0,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 70,
+                            "y": 92,
+                            "z": 0,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        }
+                    ]
+                },
+                {
+                    "reference": "Small",
+                    "volume_utilisation": 20,
+                    "items": [
+                        {
+                            "description": "SKU1",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 0,
+                            "y": 55,
+                            "z": 0,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "balanced_keep_flat",
+            "max_boxes_to_balance_weight": 12,
+            "boxes": [
+                {
+                    "reference": "Box",
+                    "outer_width": 370,
+                    "outer_length": 375,
+                    "outer_depth": 60,
+                    "empty_weight": 140,
+                    "inner_width": 364,
+                    "inner_length": 374,
+                    "inner_depth": 40,
+                    "max_weight": 3000,
+                    "quantity": null
+                }
+            ],
+            "items": [
+                {
+                    "description": "Item 1",
+                    "width": 230,
+                    "length": 330,
+                    "depth": 6,
+                    "weight": 320,
+                    "rotation": "keep_flat",
+                    "quantity": 2
+                },
+                {
+                    "description": "Item 2",
+                    "width": 210,
+                    "length": 297,
+                    "depth": 8,
+                    "weight": 300,
+                    "rotation": "keep_flat",
+                    "quantity": 4
+                }
+            ],
+            "expected_boxes": [
+                {
+                    "reference": "Box",
+                    "volume_utilisation": 26.7,
+                    "items": [
+                        {
+                            "description": "Item 2",
+                            "x": 0,
+                            "y": 0,
+                            "z": 6,
+                            "width": 297,
+                            "length": 210,
+                            "depth": 8
+                        },
+                        {
+                            "description": "Item 2",
+                            "x": 0,
+                            "y": 0,
+                            "z": 14,
+                            "width": 297,
+                            "length": 210,
+                            "depth": 8
+                        },
+                        {
+                            "description": "Item 1",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 330,
+                            "length": 230,
+                            "depth": 6
+                        }
+                    ]
+                },
+                {
+                    "reference": "Box",
+                    "volume_utilisation": 26.7,
+                    "items": [
+                        {
+                            "description": "Item 2",
+                            "x": 0,
+                            "y": 0,
+                            "z": 6,
+                            "width": 297,
+                            "length": 210,
+                            "depth": 8
+                        },
+                        {
+                            "description": "Item 2",
+                            "x": 0,
+                            "y": 0,
+                            "z": 14,
+                            "width": 297,
+                            "length": 210,
+                            "depth": 8
+                        },
+                        {
+                            "description": "Item 1",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 330,
+                            "length": 230,
+                            "depth": 6
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "weight_limited",
+            "max_boxes_to_balance_weight": 12,
+            "boxes": [
+                {
+                    "reference": "Cube",
+                    "outer_width": 110,
+                    "outer_length": 110,
+                    "outer_depth": 110,
+                    "empty_weight": 100,
+                    "inner_width": 100,
+                    "inner_length": 100,
+                    "inner_depth": 100,
+                    "max_weight": 1000,
+                    "quantity": null
+                }
+            ],
+            "items": [
+                {
+                    "description": "Heavy cube",
+                    "width": 50,
+                    "length": 50,
+                    "depth": 50,
+                    "weight": 200,
+                    "rotation": "best_fit",
+                    "quantity": 10
+                }
+            ],
+            "expected_boxes": [
+                {
+                    "reference": "Cube",
+                    "volume_utilisation": 50,
+                    "items": [
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 50,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 50,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        }
+                    ]
+                },
+                {
+                    "reference": "Cube",
+                    "volume_utilisation": 37.5,
+                    "items": [
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 50,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        }
+                    ]
+                },
+                {
+                    "reference": "Cube",
+                    "volume_utilisation": 37.5,
+                    "items": [
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 50,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Heavy cube",
+                            "x": 0,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "multiple_box_sizes",
+            "max_boxes_to_balance_weight": 0,
+            "boxes": [
+                {
+                    "reference": "Small",
+                    "outer_width": 50,
+                    "outer_length": 50,
+                    "outer_depth": 50,
+                    "empty_weight": 0,
+                    "inner_width": 50,
+                    "inner_length": 50,
+                    "inner_depth": 50,
+                    "max_weight": 1000000,
+                    "quantity": null
+                },
+                {
+                    "reference": "Big",
+                    "outer_width": 100,
+                    "outer_length": 100,
+                    "outer_depth": 50,
+                    "empty_weight": 0,
+                    "inner_width": 100,
+                    "inner_length": 100,
+                    "inner_depth": 50,
+                    "max_weight": 1000000,
+                    "quantity": null
+                }
+            ],
+            "items": [
+                {
+                    "description": "Widget",
+                    "width": 50,
+                    "length": 50,
+                    "depth": 50,
+                    "weight": 100,
+                    "rotation": "best_fit",
+                    "quantity": 5
+                }
+            ],
+            "expected_boxes": [
+                {
+                    "reference": "Big",
+                    "volume_utilisation": 100,
+                    "items": [
+                        {
+                            "description": "Widget",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Widget",
+                            "x": 50,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Widget",
+                            "x": 0,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        },
+                        {
+                            "description": "Widget",
+                            "x": 50,
+                            "y": 50,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        }
+                    ]
+                },
+                {
+                    "reference": "Small",
+                    "volume_utilisation": 100,
+                    "items": [
+                        {
+                            "description": "Widget",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 50,
+                            "length": 50,
+                            "depth": 50
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "limited_supply_fallback",
+            "max_boxes_to_balance_weight": 12,
+            "boxes": [
+                {
+                    "reference": "Light box",
+                    "outer_width": 100,
+                    "outer_length": 100,
+                    "outer_depth": 100,
+                    "empty_weight": 1,
+                    "inner_width": 100,
+                    "inner_length": 100,
+                    "inner_depth": 100,
+                    "max_weight": 100,
+                    "quantity": 2
+                },
+                {
+                    "reference": "Heavy box",
+                    "outer_width": 100,
+                    "outer_length": 100,
+                    "outer_depth": 100,
+                    "empty_weight": 100,
+                    "inner_width": 100,
+                    "inner_length": 100,
+                    "inner_depth": 100,
+                    "max_weight": 10000,
+                    "quantity": null
+                }
+            ],
+            "items": [
+                {
+                    "description": "Item",
+                    "width": 100,
+                    "length": 100,
+                    "depth": 100,
+                    "weight": 75,
+                    "rotation": "best_fit",
+                    "quantity": 3
+                }
+            ],
+            "expected_boxes": [
+                {
+                    "reference": "Heavy box",
+                    "volume_utilisation": 100,
+                    "items": [
+                        {
+                            "description": "Item",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 100,
+                            "length": 100,
+                            "depth": 100
+                        }
+                    ]
+                },
+                {
+                    "reference": "Light box",
+                    "volume_utilisation": 100,
+                    "items": [
+                        {
+                            "description": "Item",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 100,
+                            "length": 100,
+                            "depth": 100
+                        }
+                    ]
+                },
+                {
+                    "reference": "Light box",
+                    "volume_utilisation": 100,
+                    "items": [
+                        {
+                            "description": "Item",
+                            "x": 0,
+                            "y": 0,
+                            "z": 0,
+                            "width": 100,
+                            "length": 100,
+                            "depth": 100
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

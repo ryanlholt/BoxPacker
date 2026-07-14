@@ -57,6 +57,18 @@ never increases box count and respects limited box quantities.
 Use `packer.SetMaxBoxesToBalanceWeight(n)` to change the 12-box threshold, or
 pass `0` to disable redistribution and keep the initial greedy box makeup.
 
+## Result ordering and utilization
+
+`Pack` returns boxes in the active `PackedBoxSorter` order. The default order
+is most items first, then highest volume utilization, then most used volume.
+`PackedBox.VolumeUtilisation()` is rounded to one decimal place before that
+comparison, matching PHP 3.x.
+
+Within each box, `Items` is ordered by the original item volume descending,
+then item weight descending. Equal-volume, equal-weight items retain their
+packing order. These ordering rules also apply when weight redistribution is
+disabled or skipped.
+
 ## Usage
 
 ```go

@@ -123,6 +123,12 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities)
 		packedBoxes = redistributor.redistributeWeight(packedBoxes)
 	}
+	// PHP exposes a PackedBoxList that sorts lazily on iteration. Go returns a
+	// slice, so apply the active sorter before returning every result, including
+	// results for which weight redistribution is disabled or skipped.
+	sort.SliceStable(packedBoxes, func(i, j int) bool {
+		return p.boxSorter.Compare(packedBoxes[i], packedBoxes[j]) < 0
+	})
 	return packedBoxes, nil
 }
 

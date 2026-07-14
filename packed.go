@@ -1,5 +1,10 @@
 package boxpacker
 
+import (
+	"math"
+	"sort"
+)
+
 // PackedItem is an item with a position and orientation inside a packed box.
 //
 // X/Y/Z are the coordinates of the corner of the item closest to the origin
@@ -57,6 +62,10 @@ type PackedBox struct {
 }
 
 func newPackedBox(box Box, items *packedItemList) *PackedBox {
+	// PHP PackedBox construction iterates PackedItemList to calculate weight,
+	// which sorts the publicly observable item order by original volume and
+	// weight. Apply that ordering eagerly for the Go slice representation.
+	sortPackedItems(items.items)
 	return &PackedBox{
 		Box:        box,
 		Items:      items.items,
@@ -101,13 +110,15 @@ func (b *PackedBox) UnusedVolume() int {
 	return b.InnerVolume() - b.usedVolume
 }
 
-// VolumeUtilisation is the percentage (0-100) of the box volume in use.
+// VolumeUtilisation is the percentage (0-100) of the box volume in use,
+// rounded to one decimal place to match PHP PackedBox semantics.
 func (b *PackedBox) VolumeUtilisation() float64 {
 	innerVolume := b.InnerVolume()
 	if innerVolume == 0 {
 		innerVolume = 1
 	}
-	return float64(b.usedVolume) / float64(innerVolume) * 100
+	utilisation := float64(b.usedVolume) / float64(innerVolume) * 100
+	return math.Round(utilisation*10) / 10
 }
 
 // UsedWidth is the extent of the items along the box width.
@@ -175,6 +186,16 @@ func comparePackedBoxes(a, b *PackedBox) int {
 		return 1
 	}
 	return 0
+}
+
+func sortPackedItems(items []*PackedItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		iv, jv := itemVolume(items[i].Item), itemVolume(items[j].Item)
+		if iv != jv {
+			return iv > jv
+		}
+		return items[i].Item.Weight() > items[j].Item.Weight()
+	})
 }
 
 func maxInt(a, b int) int {
