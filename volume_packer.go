@@ -58,8 +58,6 @@ func (vp *volumePacker) pack() *PackedBox {
 		rotationsToTest = append(rotationsToTest, true)
 	}
 
-	// The orientation of the first item can have an outsized effect on the
-	// rest of the placement, so special-case that and try everything.
 	var best *PackedBox
 	for _, rotated := range rotationsToTest {
 		boxWidth, boxLength := vp.box.InnerWidth(), vp.box.InnerLength()
@@ -67,28 +65,19 @@ func (vp *volumePacker) pack() *PackedBox {
 			boxWidth, boxLength = boxLength, boxWidth
 		}
 
-		firstItemOrientations := []*orientatedItem{nil}
-		if !vp.singlePassMode {
-			if possible := vp.layerPacker.factory.getPossibleOrientations(vp.items.top(), nil, boxWidth, boxLength, vp.box.InnerDepth()); len(possible) > 0 {
-				firstItemOrientations = possible
-			}
+		result := vp.packRotation(boxWidth, boxLength)
+		if len(result.Items) == vp.items.count() { // everything fitted, no need to try harder
+			return result
 		}
-
-		for _, firstItemOrientation := range firstItemOrientations {
-			result := vp.packRotation(boxWidth, boxLength, firstItemOrientation)
-			if len(result.Items) == vp.items.count() { // everything fitted, no need to try harder
-				return result
-			}
-			if best == nil || result.VolumeUtilisation() > best.VolumeUtilisation() {
-				best = result
-			}
+		if best == nil || result.VolumeUtilisation() > best.VolumeUtilisation() {
+			best = result
 		}
 	}
 
 	return best
 }
 
-func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientation *orientatedItem) *PackedBox {
+func (vp *volumePacker) packRotation(boxWidth, boxLength int) *PackedBox {
 	var layers []*packedLayer
 	items := vp.items.clone()
 
@@ -99,13 +88,9 @@ func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientati
 		}
 		packedItemList := collectPackedItems(layers)
 
-		if packedItemList.count() > 0 {
-			firstItemOrientation = nil
-		}
-
 		// do a preliminary layer pack to get the depth used
 		preliminaryItems := items.clone()
-		preliminaryLayer := vp.layerPacker.packLayer(preliminaryItems, packedItemList.clone(), 0, 0, layerStartDepth, boxWidth, boxLength, vp.box.InnerDepth()-layerStartDepth, 0, true, firstItemOrientation)
+		preliminaryLayer := vp.layerPacker.packLayer(preliminaryItems, packedItemList.clone(), 0, 0, layerStartDepth, boxWidth, boxLength, vp.box.InnerDepth()-layerStartDepth, 0, true)
 		if len(preliminaryLayer.items) == 0 {
 			break
 		}
@@ -115,7 +100,7 @@ func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientati
 			layers = append(layers, preliminaryLayer)
 			items = preliminaryItems
 		} else { // redo with now-known depth so that we can stack to that height from the first item
-			layers = append(layers, vp.layerPacker.packLayer(items, packedItemList, 0, 0, layerStartDepth, boxWidth, boxLength, vp.box.InnerDepth()-layerStartDepth, preliminaryLayerDepth, true, firstItemOrientation))
+			layers = append(layers, vp.layerPacker.packLayer(items, packedItemList, 0, 0, layerStartDepth, boxWidth, boxLength, vp.box.InnerDepth()-layerStartDepth, preliminaryLayerDepth, true))
 		}
 	}
 
@@ -127,13 +112,13 @@ func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientati
 		for _, layer := range layers {
 			maxLayerWidth = maxInt(maxLayerWidth, layer.endX())
 		}
-		layers = append(layers, vp.layerPacker.packLayer(items, collectPackedItems(layers), maxLayerWidth, 0, 0, boxWidth, boxLength, vp.box.InnerDepth(), vp.box.InnerDepth(), false, nil))
+		layers = append(layers, vp.layerPacker.packLayer(items, collectPackedItems(layers), maxLayerWidth, 0, 0, boxWidth, boxLength, vp.box.InnerDepth(), vp.box.InnerDepth(), false))
 
 		maxLayerLength := 0
 		for _, layer := range layers {
 			maxLayerLength = maxInt(maxLayerLength, layer.endY())
 		}
-		layers = append(layers, vp.layerPacker.packLayer(items, collectPackedItems(layers), 0, maxLayerLength, 0, boxWidth, boxLength, vp.box.InnerDepth(), vp.box.InnerDepth(), false, nil))
+		layers = append(layers, vp.layerPacker.packLayer(items, collectPackedItems(layers), 0, maxLayerLength, 0, boxWidth, boxLength, vp.box.InnerDepth(), vp.box.InnerDepth(), false))
 	}
 
 	if vp.box.InnerWidth() != boxWidth { // swap back width/length of the packed items to match the box
