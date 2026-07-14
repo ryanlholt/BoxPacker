@@ -74,50 +74,58 @@ func TestPHPParityGoldenCorpus(t *testing.T) {
 	if err := json.Unmarshal(data, &corpus); err != nil {
 		t.Fatalf("decode PHP parity corpus: %v", err)
 	}
-	if corpus.Source.Commit != "ec5663dac4a7630368296ab87800db48a2e2d67a" {
+	if corpus.Source.Branch != "feature/quantity-short-circuit" {
+		t.Fatalf("unexpected PHP corpus source branch %q", corpus.Source.Branch)
+	}
+	if corpus.Source.Commit != "e0aa3a969b5fe650db11a90b5acfed948018de69" {
 		t.Fatalf("unexpected PHP corpus source commit %q", corpus.Source.Commit)
 	}
 
 	for _, scenario := range corpus.Scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
-			packer := NewPacker()
-			packer.SetMaxBoxesToBalanceWeight(scenario.MaxBoxesToBalanceWeight)
-			for _, definition := range scenario.Boxes {
-				arguments := []int{
-					definition.OuterWidth, definition.OuterLength, definition.OuterDepth,
-					definition.EmptyWeight,
-					definition.InnerWidth, definition.InnerLength, definition.InnerDepth,
-					definition.MaxWeight,
-				}
-				if definition.Quantity == nil {
-					packer.AddBox(NewBox(definition.Reference, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7]))
-				} else {
-					packer.AddBox(NewLimitedSupplyBox(definition.Reference, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7], *definition.Quantity))
-				}
-			}
-			for _, definition := range scenario.Items {
-				packer.AddItem(NewItem(
-					definition.Description,
-					definition.Width,
-					definition.Length,
-					definition.Depth,
-					definition.Weight,
-					phpParityRotation(t, definition.Rotation),
-				), definition.Quantity)
-			}
+			for _, shortCircuit := range []bool{false, true} {
+				t.Run(fmt.Sprintf("short-circuit=%t", shortCircuit), func(t *testing.T) {
+					packer := NewPacker()
+					packer.SetQuantityShortCircuit(shortCircuit)
+					packer.SetMaxBoxesToBalanceWeight(scenario.MaxBoxesToBalanceWeight)
+					for _, definition := range scenario.Boxes {
+						arguments := []int{
+							definition.OuterWidth, definition.OuterLength, definition.OuterDepth,
+							definition.EmptyWeight,
+							definition.InnerWidth, definition.InnerLength, definition.InnerDepth,
+							definition.MaxWeight,
+						}
+						if definition.Quantity == nil {
+							packer.AddBox(NewBox(definition.Reference, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7]))
+						} else {
+							packer.AddBox(NewLimitedSupplyBox(definition.Reference, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7], *definition.Quantity))
+						}
+					}
+					for _, definition := range scenario.Items {
+						packer.AddItem(NewItem(
+							definition.Description,
+							definition.Width,
+							definition.Length,
+							definition.Depth,
+							definition.Weight,
+							phpParityRotation(t, definition.Rotation),
+						), definition.Quantity)
+					}
 
-			packed, err := packer.Pack()
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			for _, box := range packed {
-				assertPackedBoxValid(t, box)
-			}
-			got := phpParityResult(packed)
-			if !reflect.DeepEqual(got, scenario.ExpectedBoxes) {
-				gotJSON, _ := json.MarshalIndent(got, "", "  ")
-				wantJSON, _ := json.MarshalIndent(scenario.ExpectedBoxes, "", "  ")
-				t.Fatalf("ordered PHP parity result differs:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+					packed, err := packer.Pack()
+					if err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					for _, box := range packed {
+						assertPackedBoxValid(t, box)
+					}
+					got := phpParityResult(packed)
+					if !reflect.DeepEqual(got, scenario.ExpectedBoxes) {
+						gotJSON, _ := json.MarshalIndent(got, "", "  ")
+						wantJSON, _ := json.MarshalIndent(scenario.ExpectedBoxes, "", "  ")
+						t.Fatalf("ordered PHP parity result differs:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+					}
+				})
 			}
 		})
 	}

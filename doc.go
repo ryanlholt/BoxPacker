@@ -17,7 +17,7 @@
 // threshold is configurable and can be set to zero to disable redistribution.
 // Returned boxes follow the active PackedBoxSorter, packed items are ordered by
 // original volume and weight, and volume utilization is rounded to one decimal
-// place, matching the observable PHP 3.x result semantics.
+// place, matching the observable PHP 4.x result semantics for shared features.
 //
 // Dimensions are unit-agnostic but must be consistent, and must be integers
 // (the reference implementation recommends millimetres and grams). Item and

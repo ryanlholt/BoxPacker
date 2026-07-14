@@ -1,8 +1,8 @@
 {
     "source": {
         "repository": "https://github.com/ryanlholt/DvdBoxPacker",
-        "branch": "3.x-quantity-short-circuit",
-        "commit": "ec5663dac4a7630368296ab87800db48a2e2d67a"
+        "branch": "feature/quantity-short-circuit",
+        "commit": "e0aa3a969b5fe650db11a90b5acfed948018de69"
     },
     "scenarios": [
         {
@@ -57,127 +57,121 @@
             "expected_boxes": [
                 {
                     "reference": "Large",
-                    "volume_utilisation": 57.1,
+                    "volume_utilisation": 64.8,
                     "items": [
                         {
                             "description": "SKU0",
                             "x": 0,
                             "y": 0,
                             "z": 0,
-                            "width": 45,
-                            "length": 92,
+                            "width": 92,
+                            "length": 45,
                             "depth": 54
                         },
                         {
                             "description": "SKU0",
-                            "x": 45,
-                            "y": 0,
-                            "z": 0,
-                            "width": 45,
-                            "length": 92,
-                            "depth": 54
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 90,
-                            "y": 0,
-                            "z": 0,
-                            "width": 45,
-                            "length": 92,
-                            "depth": 54
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 0,
-                            "y": 0,
-                            "z": 54,
-                            "width": 45,
-                            "length": 92,
-                            "depth": 54
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 45,
-                            "y": 0,
-                            "z": 54,
-                            "width": 45,
-                            "length": 92,
-                            "depth": 54
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 90,
-                            "y": 0,
-                            "z": 54,
-                            "width": 45,
-                            "length": 92,
-                            "depth": 54
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 0,
-                            "y": 92,
-                            "z": 54,
-                            "width": 45,
-                            "length": 54,
-                            "depth": 92
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 45,
-                            "y": 92,
-                            "z": 54,
-                            "width": 45,
-                            "length": 54,
-                            "depth": 92
-                        },
-                        {
-                            "description": "SKU0",
-                            "x": 90,
-                            "y": 92,
-                            "z": 54,
-                            "width": 45,
-                            "length": 54,
-                            "depth": 92
-                        },
-                        {
-                            "description": "SKU1",
-                            "x": 0,
-                            "y": 92,
-                            "z": 0,
-                            "width": 70,
-                            "length": 55,
-                            "depth": 41
-                        },
-                        {
-                            "description": "SKU1",
-                            "x": 70,
-                            "y": 92,
-                            "z": 0,
-                            "width": 70,
-                            "length": 55,
-                            "depth": 41
-                        }
-                    ]
-                },
-                {
-                    "reference": "Small",
-                    "volume_utilisation": 20,
-                    "items": [
-                        {
-                            "description": "SKU1",
-                            "x": 0,
-                            "y": 0,
-                            "z": 0,
-                            "width": 70,
-                            "length": 55,
-                            "depth": 41
-                        },
-                        {
-                            "description": "SKU1",
                             "x": 0,
                             "y": 55,
                             "z": 0,
+                            "width": 54,
+                            "length": 45,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 54,
+                            "y": 55,
+                            "z": 0,
+                            "width": 54,
+                            "length": 45,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 108,
+                            "y": 55,
+                            "z": 0,
+                            "width": 54,
+                            "length": 45,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 0,
+                            "y": 100,
+                            "z": 0,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 45,
+                            "y": 100,
+                            "z": 0,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 90,
+                            "y": 100,
+                            "z": 0,
+                            "width": 45,
+                            "length": 54,
+                            "depth": 92
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 0,
+                            "y": 0,
+                            "z": 92,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU0",
+                            "x": 45,
+                            "y": 0,
+                            "z": 92,
+                            "width": 45,
+                            "length": 92,
+                            "depth": 54
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 92,
+                            "y": 0,
+                            "z": 0,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 92,
+                            "y": 0,
+                            "z": 41,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 90,
+                            "y": 0,
+                            "z": 92,
+                            "width": 70,
+                            "length": 55,
+                            "depth": 41
+                        },
+                        {
+                            "description": "SKU1",
+                            "x": 0,
+                            "y": 92,
+                            "z": 92,
                             "width": 70,
                             "length": 55,
                             "depth": 41
@@ -233,8 +227,8 @@
                             "x": 0,
                             "y": 0,
                             "z": 6,
-                            "width": 297,
-                            "length": 210,
+                            "width": 210,
+                            "length": 297,
                             "depth": 8
                         },
                         {
@@ -266,8 +260,8 @@
                             "x": 0,
                             "y": 0,
                             "z": 6,
-                            "width": 297,
-                            "length": 210,
+                            "width": 210,
+                            "length": 297,
                             "depth": 8
                         },
                         {

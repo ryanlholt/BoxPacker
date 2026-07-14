@@ -24,7 +24,7 @@ func TestWeightRedistributionMatchesPHPUnitFixture(t *testing.T) {
 	}
 }
 
-func TestWeightRedistributionMatchesPHPMixedFixture(t *testing.T) {
+func TestWeightRedistributionMatchesPHP4MixedFixture(t *testing.T) {
 	packer := NewPacker()
 	packer.AddBox(NewBox("Box", 370, 375, 60, 140, 364, 374, 40, 3_000))
 	packer.AddItem(NewItem("Item 1", 230, 330, 6, 320, RotationKeepFlat), 2)
@@ -35,8 +35,8 @@ func TestWeightRedistributionMatchesPHPMixedFixture(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{
-		"Box#Item 1:0:0:0:330:230:6|Item 2:0:0:14:297:210:8|Item 2:0:0:6:297:210:8",
-		"Box#Item 1:0:0:0:330:230:6|Item 2:0:0:14:297:210:8|Item 2:0:0:6:297:210:8",
+		"Box#Item 1:0:0:0:330:230:6|Item 2:0:0:14:297:210:8|Item 2:0:0:6:210:297:8",
+		"Box#Item 1:0:0:0:330:230:6|Item 2:0:0:14:297:210:8|Item 2:0:0:6:210:297:8",
 	}
 	if got := canonicalPacking(packed); !slices.Equal(got, want) {
 		t.Fatalf("redistributed packing differs from PHP:\ngot:  %v\nwant: %v", got, want)

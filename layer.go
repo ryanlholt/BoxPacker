@@ -106,6 +106,7 @@ func (lp *layerPacker) packLayer(
 	widthForLayer, lengthForLayer, depthForLayer int,
 	guidelineLayerDepth int,
 	considerStability bool,
+	firstItem *orientatedItem,
 ) *packedLayer {
 	layer := &packedLayer{}
 	x, y, z := startX, startY, startZ
@@ -121,7 +122,13 @@ func (lp *layerPacker) packLayer(
 			continue
 		}
 
-		orientated := lp.factory.getBestOrientation(itemToPack, prevItem, items, widthForLayer-x, lengthForLayer-y, depthForLayer, rowLength, x, y, z, packedItemList, considerStability)
+		var orientated *orientatedItem
+		if firstItem != nil && firstItem.item == itemToPack {
+			orientated = firstItem
+			firstItem = nil
+		} else {
+			orientated = lp.factory.getBestOrientation(itemToPack, prevItem, items, widthForLayer-x, lengthForLayer-y, depthForLayer, rowLength, x, y, z, packedItemList, considerStability)
+		}
 
 		if orientated != nil {
 			packed := &PackedItem{Item: itemToPack, X: x, Y: y, Z: z, Width: orientated.width, Length: orientated.length, Depth: orientated.depth}
@@ -139,14 +146,14 @@ func (lp *layerPacker) packLayer(
 			}
 			stackableDepth := guideline - packed.Depth
 			if stackableDepth > 0 {
-				stackedLayer := lp.packLayer(items, packedItemList, x, y, z+packed.Depth, x+packed.Width, y+packed.Length, stackableDepth, stackableDepth, considerStability)
+				stackedLayer := lp.packLayer(items, packedItemList, x, y, z+packed.Depth, x+packed.Width, y+packed.Length, stackableDepth, stackableDepth, considerStability, nil)
 				layer.merge(stackedLayer)
 			}
 
 			x += packed.Width
 
 			// might be space available lengthwise across the width of this item, up to the current layer length
-			layer.merge(lp.packLayer(items, packedItemList, x-packed.Width, y+packed.Length, z, x, y+rowLength, depthForLayer, layer.depth(), considerStability))
+			layer.merge(lp.packLayer(items, packedItemList, x-packed.Width, y+packed.Length, z, x, y+rowLength, depthForLayer, layer.depth(), considerStability, nil))
 
 			if items.count() == 0 && len(skippedItems) > 0 {
 				items.replace(skippedItems, true)
