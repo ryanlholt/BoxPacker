@@ -6,6 +6,10 @@ boxes by **width, length, depth and weight**.
 This is a Go port of the excellent [dvdoug/boxpacker](https://github.com/dvdoug/boxpacker)
 PHP library, using the same layer-based packing heuristics:
 
+Packing-result compatibility is verified against the
+[`feature/quantity-short-circuit`](https://github.com/ryanlholt/DvdBoxPacker/tree/feature/quantity-short-circuit)
+branch of the PHP fork for the features shared by both implementations.
+
 - Items are packed largest-first into horizontal layers, in rows, with
   smaller items stacked into the gaps above and beside larger ones.
 - All allowed rotations of each item are considered, preferring exact fits,
@@ -48,7 +52,7 @@ quantity-independent number of real packing evaluations.
 
 ## Weight redistribution
 
-Like the PHP 3.x packer, `Pack` performs a post-pack pass by default when the
+Like the PHP packer, `Pack` performs a post-pack pass by default when the
 initial result contains 2 through 12 boxes. It attempts to move items from
 heavier boxes to lighter ones when doing so reduces item-weight variance and
 both resulting item sets can still be packed into one available box. The pass
@@ -62,7 +66,7 @@ pass `0` to disable redistribution and keep the initial greedy box makeup.
 `Pack` returns boxes in the active `PackedBoxSorter` order. The default order
 is most items first, then highest volume utilization, then most used volume.
 `PackedBox.VolumeUtilisation()` is rounded to one decimal place before that
-comparison, matching PHP 3.x.
+comparison, matching the PHP feature branch.
 
 Within each box, `Items` is ordered by the original item volume descending,
 then item weight descending. Equal-volume, equal-weight items retain their
@@ -188,8 +192,8 @@ fractions.
   to 12 boxes by default.
 - Supports a custom `PackedBoxSorter` (like the PHP library), plus
   `BillableWeight`/`VolumetricWeight` helpers for dim-weight-aware objectives.
-- No `ConstrainedPlacementItem` (custom placement callbacks), timeout checker,
-  or `packAllPermutations`.
+- No `ConstrainedPlacementItem` callbacks, linked-item groups, strict input
+  ordering, timeout checker, or `packAllPermutations`.
 - Errors are returned as values (`*NoBoxesAvailableError`) rather than thrown.
 
 A `Packer` is single-use and not safe for concurrent use; create one per

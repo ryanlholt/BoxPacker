@@ -135,50 +135,35 @@ func TestMultipleBoxTypes(t *testing.T) {
 	}
 }
 
-// TestPHPFirstItemOrientationParity pins a fixture where exhaustively trying
-// every orientation of the first item finds a denser result than the PHP 3.x
-// heuristic. Compatibility requires the first item to use the same bounded
-// lookahead orientation sorter as every item that follows it.
-func TestPHPFirstItemOrientationParity(t *testing.T) {
-	packer := NewPacker()
-	packer.SetQuantityShortCircuit(false)
-	packer.SetMaxBoxesToBalanceWeight(0)
-	packer.AddBox(NewBox("small", 107, 118, 125, 0, 107, 118, 125, 1_000_000))
-	packer.AddBox(NewBox("large", 170, 160, 150, 0, 170, 160, 150, 1_000_000))
-	packer.AddItem(NewItem("SKU0", 45, 92, 54, 322, RotationBestFit), 9)
-	packer.AddItem(NewItem("SKU1", 55, 70, 41, 376, RotationKeepFlat), 4)
+// TestPHP4FirstItemOrientationParity pins the 4.x enhancement that tries all
+// valid orientations of the first item. The denser orientation packs this
+// fixture into one box instead of the two boxes produced by PHP 3.x.
+func TestPHP4FirstItemOrientationParity(t *testing.T) {
+	for _, shortCircuit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("short-circuit=%t", shortCircuit), func(t *testing.T) {
+			packer := NewPacker()
+			packer.SetQuantityShortCircuit(shortCircuit)
+			packer.SetMaxBoxesToBalanceWeight(0)
+			packer.AddBox(NewBox("small", 107, 118, 125, 0, 107, 118, 125, 1_000_000))
+			packer.AddBox(NewBox("large", 170, 160, 150, 0, 170, 160, 150, 1_000_000))
+			packer.AddItem(NewItem("SKU0", 45, 92, 54, 322, RotationBestFit), 9)
+			packer.AddItem(NewItem("SKU1", 55, 70, 41, 376, RotationKeepFlat), 4)
 
-	packed, err := packer.Pack()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(packed) != 2 {
-		t.Fatalf("expected the PHP-compatible 2-box result, got %d boxes", len(packed))
-	}
-
-	type makeup struct{ sku0, sku1 int }
-	got := make(map[string]makeup, len(packed))
-	for _, packedBox := range packed {
-		assertPackedBoxValid(t, packedBox)
-		contents := makeup{}
-		for _, packedItem := range packedBox.Items {
-			switch packedItem.Item.Description() {
-			case "SKU0":
-				contents.sku0++
-			case "SKU1":
-				contents.sku1++
-			default:
-				t.Fatalf("unexpected item %q", packedItem.Item.Description())
+			packed, err := packer.Pack()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
-		}
-		got[packedBox.Box.Reference()] = contents
-	}
-
-	if want := (makeup{sku0: 9, sku1: 2}); got["large"] != want {
-		t.Errorf("large box makeup = %+v, want %+v", got["large"], want)
-	}
-	if want := (makeup{sku1: 2}); got["small"] != want {
-		t.Errorf("small box makeup = %+v, want %+v", got["small"], want)
+			if len(packed) != 1 {
+				t.Fatalf("expected the PHP 4.x one-box result, got %d boxes", len(packed))
+			}
+			if packed[0].Box.Reference() != "large" {
+				t.Fatalf("expected large box, got %q", packed[0].Box.Reference())
+			}
+			if got := totalPackedItems(packed); got != 13 {
+				t.Fatalf("packed %d items, want 13", got)
+			}
+			assertPackedBoxValid(t, packed[0])
+		})
 	}
 }
 
