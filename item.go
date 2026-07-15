@@ -8,7 +8,8 @@ import (
 // Item is an item to be packed.
 //
 // Implementations must be comparable with == (use a pointer type), as item
-// identity is used to track items through the packing process.
+// identity is used to track items through the packing process. Methods may be
+// called concurrently during packing and must be safe for concurrent reads.
 type Item interface {
 	// Description returns the item SKU, name etc.
 	Description() string

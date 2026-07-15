@@ -15,12 +15,17 @@
 // Results containing two through twelve boxes are rebalanced by item weight by
 // default, matching the PHP packer's post-pack redistribution behavior; the
 // threshold is configurable and can be set to zero to disable redistribution.
+// Independent candidate-box and first-item-orientation evaluations use an
+// adaptive bounded scheduler. It respects GOMAXPROCS, shares capacity across
+// simultaneous pack calls, preserves indexed tie-breaking, and can be forced
+// serial with Packer.SetMaxConcurrency(1).
 // Returned boxes follow the active PackedBoxSorter, packed items are ordered by
 // original volume and weight, and volume utilization is rounded to one decimal
 // place, matching the observable PHP 4.x result semantics for shared features.
 //
 // Dimensions are unit-agnostic but must be consistent, and must be integers
 // (the reference implementation recommends millimetres and grams). Item and
-// Box implementations must be comparable (in practice: use pointer types),
-// as identity is used to track items through the packing process.
+// Box implementations must be comparable (in practice: use pointer types), as
+// identity is used to track items through the packing process. Their getter
+// methods must also be safe for concurrent reads.
 package boxpacker

@@ -4,7 +4,8 @@ import "math"
 
 // Box is a container that items are packed into.
 //
-// Implementations must be comparable with == (use a pointer type).
+// Implementations must be comparable with == (use a pointer type). Methods may
+// be called concurrently during packing and must be safe for concurrent reads.
 type Box interface {
 	// Reference returns the box type reference, e.g. SKU or description.
 	Reference() string

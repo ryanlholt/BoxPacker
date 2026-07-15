@@ -1,5 +1,10 @@
 package boxpacker
 
+import (
+	"sync"
+	"sync/atomic"
+)
+
 // VolumePacker packs as many items as possible into a single specific box.
 type volumePacker struct {
 	box                 Box
@@ -8,6 +13,8 @@ type volumePacker struct {
 	singlePassMode      bool
 	packAcrossWidthOnly bool
 	hasNoRotationItems  bool
+	maxConcurrency      int
+	schedulerObserver   evaluationSchedulerObserver
 }
 
 func newVolumePacker(box Box, items *itemList) *volumePacker {
@@ -31,8 +38,22 @@ type VolumePacker struct {
 	inner *volumePacker
 }
 
+// SetMaxConcurrency sets the maximum number of evaluations this packer may
+// execute concurrently. Zero selects adaptive behavior, one forces serial
+// evaluation, and values greater than one are hard ceilings rather than target
+// worker counts. Negative values restore adaptive behavior.
+func (vp *VolumePacker) SetMaxConcurrency(maxConcurrency int) {
+	if maxConcurrency < 0 {
+		maxConcurrency = 0
+	}
+	vp.inner.maxConcurrency = maxConcurrency
+}
+
 // Pack runs the packing and returns the resulting packed box.
 func (vp *VolumePacker) Pack() *PackedBox {
+	endPackingCall := beginPackingCall()
+	defer endPackingCall()
+
 	return vp.inner.pack()
 }
 
@@ -48,8 +69,22 @@ func (vp *volumePacker) setSinglePassMode(singlePassMode bool) {
 
 // pack as many items as possible into the box.
 func (vp *volumePacker) pack() *PackedBox {
+	return vp.packWithConcurrency(vp.maxConcurrency, vp.schedulerObserver)
+}
+
+type volumeEvaluationTask struct {
+	boxWidth, boxLength int
+	firstItem           *orientatedItem
+}
+
+type completedVolumeEvaluation struct {
+	index int
+	box   *PackedBox
+}
+
+func (vp *volumePacker) evaluationTasks() []volumeEvaluationTask {
 	if vp.items.count() == 0 {
-		return newPackedBox(vp.box, &packedItemList{})
+		return nil
 	}
 
 	// Sometimes "space available" decisions depend on orientation of the box, so try both ways
@@ -58,9 +93,9 @@ func (vp *volumePacker) pack() *PackedBox {
 		rotationsToTest = append(rotationsToTest, true)
 	}
 
-	// The orientation of the first item can have an outsized effect on the
-	// rest of the placement, so special-case it and try every valid orientation.
-	var best *PackedBox
+	// The orientation of the first item can have an outsized effect on the rest
+	// of the placement, so special-case it and try every valid orientation.
+	var tasks []volumeEvaluationTask
 	for _, rotated := range rotationsToTest {
 		boxWidth, boxLength := vp.box.InnerWidth(), vp.box.InnerLength()
 		if rotated {
@@ -75,8 +110,86 @@ func (vp *volumePacker) pack() *PackedBox {
 		}
 
 		for _, firstItemOrientation := range firstItemOrientations {
-			result := vp.packRotation(boxWidth, boxLength, firstItemOrientation)
-			if len(result.Items) == vp.items.count() { // everything fitted, no need to try harder
+			tasks = append(tasks, volumeEvaluationTask{boxWidth: boxWidth, boxLength: boxLength, firstItem: firstItemOrientation})
+		}
+	}
+	return tasks
+}
+
+func (vp *volumePacker) runEvaluationTask(task volumeEvaluationTask) *PackedBox {
+	return vp.packRotation(task.boxWidth, task.boxLength, task.firstItem)
+}
+
+func (vp *volumePacker) packSerial() *PackedBox {
+	if vp.items.count() == 0 {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
+	return vp.reduceEvaluationTasks(vp.evaluationTasks(), 1, nil)
+}
+
+func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluationSchedulerObserver) *PackedBox {
+	if vp.items.count() == 0 {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
+	tasks := vp.evaluationTasks()
+	workers := orientationEvaluationWorkers(maxConcurrency, vp.items.count(), len(tasks), vp.singlePassMode)
+	return vp.reduceEvaluationTasks(tasks, workers, observer)
+}
+
+func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, workers int, observer evaluationSchedulerObserver) *PackedBox {
+	if workers <= 1 {
+		var best *PackedBox
+		for _, task := range tasks {
+			if observer != nil {
+				observer(evaluationOrientation, 1)
+			}
+			result := vp.runEvaluationTask(task)
+			if len(result.Items) == vp.items.count() {
+				return result
+			}
+			if best == nil || result.VolumeUtilisation() > best.VolumeUtilisation() {
+				best = result
+			}
+		}
+		return best
+	}
+
+	jobs := make(chan int, workers)
+	completed := make(chan completedVolumeEvaluation, workers)
+	var waitGroup sync.WaitGroup
+	var active atomic.Int64
+	waitGroup.Add(workers)
+	for range workers {
+		go func() {
+			defer waitGroup.Done()
+			for index := range jobs {
+				current := int(active.Add(1))
+				if observer != nil {
+					observer(evaluationOrientation, current)
+				}
+				box := vp.runEvaluationTask(tasks[index])
+				active.Add(-1)
+				completed <- completedVolumeEvaluation{index: index, box: box}
+			}
+		}()
+	}
+
+	results := make([]*PackedBox, len(tasks))
+	var best *PackedBox
+	for batchStart := 0; batchStart < len(tasks); batchStart += workers {
+		batchEnd := minInt(batchStart+workers, len(tasks))
+		for index := batchStart; index < batchEnd; index++ {
+			jobs <- index
+		}
+		for range batchEnd - batchStart {
+			result := <-completed
+			results[result.index] = result.box
+		}
+		for index := batchStart; index < batchEnd; index++ {
+			result := results[index]
+			if len(result.Items) == vp.items.count() {
+				close(jobs)
+				waitGroup.Wait()
 				return result
 			}
 			if best == nil || result.VolumeUtilisation() > best.VolumeUtilisation() {
@@ -84,6 +197,9 @@ func (vp *volumePacker) pack() *PackedBox {
 			}
 		}
 	}
+
+	close(jobs)
+	waitGroup.Wait()
 
 	return best
 }

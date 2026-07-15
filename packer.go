@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // NoBoxesAvailableError is returned by Pack when an item cannot fit into any
@@ -29,6 +30,8 @@ type Packer struct {
 	maxBoxesToBalanceWeight int
 	boxSorter               PackedBoxSorter
 	boxEvaluationObserver   func(Box)
+	maxConcurrency          int
+	schedulerObserver       evaluationSchedulerObserver
 }
 
 // NewPacker creates an empty Packer. The quantity short-circuit optimisation
@@ -96,6 +99,17 @@ func (p *Packer) SetQuantityShortCircuit(enabled bool) {
 	p.quantityShortCircuit = enabled
 }
 
+// SetMaxConcurrency sets the maximum number of box or orientation evaluations
+// this packer may execute concurrently. Zero selects adaptive behavior, one
+// forces serial evaluation, and values greater than one are hard ceilings
+// rather than target worker counts. Negative values restore adaptive behavior.
+func (p *Packer) SetMaxConcurrency(maxConcurrency int) {
+	if maxConcurrency < 0 {
+		maxConcurrency = 0
+	}
+	p.maxConcurrency = maxConcurrency
+}
+
 // MaxBoxesToBalanceWeight returns the largest result on which post-pack weight
 // redistribution is attempted. The default is 12 boxes.
 func (p *Packer) MaxBoxesToBalanceWeight() int {
@@ -115,12 +129,15 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
+	endPackingCall := beginPackingCall()
+	defer endPackingCall()
+
 	packedBoxes, err := p.packBasic(false)
 	if err != nil {
 		return packedBoxes, err
 	}
 	if len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
-		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities)
+		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities, p.maxConcurrency)
 		packedBoxes = redistributor.redistributeWeight(packedBoxes)
 	}
 	// PHP exposes a PackedBoxList that sorts lazily on iteration. Go returns a
@@ -146,29 +163,18 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 
 	// Keep going until everything is packed
 	for p.items.count() > 0 {
-		// Evaluate every candidate box type in parallel - each volume packer
-		// works on its own clone of the item list, so evaluations are
-		// independent. Results are kept in candidate order (smallest box
-		// first) so that tie-breaking matches sequential evaluation.
+		// Evaluate independent candidates within one shared concurrency budget.
+		// With a single candidate, spare capacity may instead be used for that
+		// box's first-orientation alternatives. Multiple candidates always use
+		// serial volume packers so scheduler pools are never nested.
 		candidates := p.candidateBoxes(enforceSingleBox)
 		p.items.ensureSorted() // so the per-candidate clones don't each re-sort
 		signatureCounts := p.items.signatureCounts()
-		results := make([]*PackedBox, len(candidates))
-		var wg sync.WaitGroup
+		packers := make([]*volumePacker, len(candidates))
 		for i, box := range candidates {
-			// clone on this goroutine: lazy sorting makes clones of the
-			// shared list unsafe to take concurrently
-			packer := newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
-			wg.Add(1)
-			go func(i int, packer *volumePacker) {
-				defer wg.Done()
-				if p.boxEvaluationObserver != nil {
-					p.boxEvaluationObserver(packer.box)
-				}
-				results[i] = packer.pack()
-			}(i, packer)
+			packers[i] = newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
 		}
-		wg.Wait()
+		results := p.evaluateCandidates(packers)
 
 		var iteration []*PackedBox
 		for _, packedBox := range results {
@@ -198,6 +204,65 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 	}
 
 	return packedBoxes, nil
+}
+
+func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
+	results := make([]*PackedBox, len(packers))
+	if len(packers) == 0 {
+		return results
+	}
+
+	observeBox := func(packer *volumePacker) {
+		if p.boxEvaluationObserver != nil {
+			p.boxEvaluationObserver(packer.box)
+		}
+	}
+
+	// A single candidate has no box-level parallelism to exploit, so let its
+	// volume packer adaptively use the same budget for first orientations.
+	if len(packers) == 1 {
+		observeBox(packers[0])
+		results[0] = packers[0].packWithConcurrency(p.maxConcurrency, p.schedulerObserver)
+		return results
+	}
+
+	workers := candidateEvaluationWorkers(p.maxConcurrency, len(packers))
+	if workers <= 1 {
+		for index, packer := range packers {
+			observeBox(packer)
+			if p.schedulerObserver != nil {
+				p.schedulerObserver(evaluationCandidate, 1)
+			}
+			results[index] = packer.packSerial()
+		}
+		return results
+	}
+
+	jobs := make(chan int, workers)
+	var waitGroup sync.WaitGroup
+	var active atomic.Int64
+	waitGroup.Add(workers)
+	for range workers {
+		go func() {
+			defer waitGroup.Done()
+			for index := range jobs {
+				packer := packers[index]
+				observeBox(packer)
+				current := int(active.Add(1))
+				if p.schedulerObserver != nil {
+					p.schedulerObserver(evaluationCandidate, current)
+				}
+				results[index] = packer.packSerial()
+				active.Add(-1)
+			}
+		}()
+	}
+	for index := range packers {
+		jobs <- index
+	}
+	close(jobs)
+	waitGroup.Wait()
+	return results
 }
 
 // replicateIdenticalBoxes is the large-quantity short-circuit. The box just
