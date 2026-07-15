@@ -8,7 +8,8 @@ import (
 // Item is an item to be packed.
 //
 // Implementations must be comparable with == (use a pointer type), as item
-// identity is used to track items through the packing process.
+// identity is used to track items through the packing process. Methods may be
+// called concurrently during packing and must be safe for concurrent reads.
 type Item interface {
 	// Description returns the item SKU, name etc.
 	Description() string
@@ -94,6 +95,25 @@ func signatureOf(item Item) itemSignature {
 		weight:      item.Weight(),
 		rotation:    item.AllowedRotation(),
 	}
+}
+
+// hasSortTiedSignature reports whether a physically different signature is
+// indistinguishable from target to compareItems. Stable sorting may interleave
+// such items, so seeing target at the head does not prove a whole prefix has
+// that signature.
+func hasSortTiedSignature(target itemSignature, counts map[itemSignature]int) bool {
+	targetVolume := target.width * target.length * target.depth
+	for candidate := range counts {
+		if candidate == target {
+			continue
+		}
+		if candidate.width*candidate.length*candidate.depth == targetVolume &&
+			candidate.weight == target.weight &&
+			candidate.description == target.description {
+			return true
+		}
+	}
+	return false
 }
 
 // itemList is a list of items to be packed, ordered largest-first.
@@ -255,21 +275,6 @@ func (l *itemList) removeSignatureMultiset(toRemove map[itemSignature]int) {
 		out = append(out, item)
 	}
 	l.list = out
-}
-
-// uniformSignature reports whether every item in the list is physically
-// interchangeable, and if so what the common signature is.
-func (l *itemList) uniformSignature() (itemSignature, bool) {
-	if len(l.list) == 0 {
-		return itemSignature{}, false
-	}
-	sig := signatureOf(l.list[0])
-	for _, item := range l.list[1:] {
-		if signatureOf(item) != sig {
-			return itemSignature{}, false
-		}
-	}
-	return sig, true
 }
 
 // isSameDimensions reports whether two items have the same dimensions in any

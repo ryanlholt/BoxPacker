@@ -17,11 +17,11 @@ branch of the PHP fork for the features shared by both implementations.
   and stable, low centre-of-gravity placements.
 - Box weight limits are enforced during placement, not after.
 - Layers are re-ordered bottom-heavy for load stability.
-- When multiple box types are available, every type is evaluated — in
-  parallel, one goroutine per candidate box — and the box that packs the most
-  items (then best volume utilisation) wins. Smaller boxes are preferred when
-  they can hold everything, and results are deterministic regardless of
-  goroutine scheduling.
+- When multiple box types are available, every type is evaluated through a
+  bounded adaptive worker pool, and the box that packs the most items (then
+  best volume utilisation) wins. Smaller boxes are preferred when they can
+  hold everything, and results are deterministic regardless of goroutine
+  scheduling.
 
 ## Large quantities
 
@@ -123,10 +123,32 @@ types: identity is used to track items through packing.
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
 | `packer.SetQuantityShortCircuit(true)` | Enable lookahead-safe work bounding and, with the built-in sorter, guarded box replication for large quantities |
+| `packer.SetMaxConcurrency(n)` | Bound independent box/orientation evaluation: `0` adapts to runtime capacity and workload, `1` is serial, and `n > 1` is a per-packer ceiling |
 | `packer.SetMaxBoxesToBalanceWeight(n)` | Rebalance results containing at most `n` boxes by weight; use `0` to disable |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
 | `packer.SetPackedBoxSorter(sorter)` | Choose which box wins each iteration with a custom objective, e.g. minimising billable shipping weight (see below) |
 | `boxpacker.NewVolumePacker(box, items).Pack()` | Pack as much as possible into one specific box |
+
+### Concurrency
+
+Packing is deterministic regardless of the selected concurrency ceiling.
+Automatic mode (the default) uses a process-wide worker lease capped by
+`GOMAXPROCS`, so simultaneous pack calls cannot collectively exceed the runtime
+budget. It stays serial when the input is too small to repay scheduling
+overhead. Multiple candidate boxes use one bounded candidate pool; a single
+candidate checks its first orientation synchronously and may then evaluate two
+remaining orientations concurrently. Recursive lookahead never creates nested
+workers.
+
+Use `SetMaxConcurrency(1)` when the caller already owns a worker pool and wants
+strictly serial work inside each request. Serial and below-threshold evaluations
+still lease one slot from the process-wide budget, so they can wait when other
+pack calls are using every `GOMAXPROCS` slot; `1` disables internal parallelism
+but does not bypass that bound. Blocking lease requests are served FIFO, and
+opportunistic orientation expansion does not jump queued requests. Values
+greater than one are ceilings, not promises that the packer will start that many
+workers. Custom `Box` and `Item` implementations must permit their getter
+methods to be called concurrently and must not be mutated during `Pack`.
 
 ### Rotation modes
 

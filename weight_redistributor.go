@@ -7,19 +7,21 @@ import "sort"
 // item-weight variance and both resulting item sets can still be packed into a
 // single available box.
 type weightRedistributor struct {
-	boxes         []Box
-	boxSorter     PackedBoxSorter
-	boxQuantities map[Box]int
+	boxes          []Box
+	boxSorter      PackedBoxSorter
+	boxQuantities  map[Box]int
+	maxConcurrency int
 }
 
-func newWeightRedistributor(boxes []Box, sorter PackedBoxSorter, boxQuantities map[Box]int) *weightRedistributor {
+func newWeightRedistributor(boxes []Box, sorter PackedBoxSorter, boxQuantities map[Box]int, maxConcurrency int) *weightRedistributor {
 	if sorter == nil {
 		sorter = defaultPackedBoxSorter{}
 	}
 	return &weightRedistributor{
-		boxes:         boxes,
-		boxSorter:     sorter,
-		boxQuantities: boxQuantities,
+		boxes:          boxes,
+		boxSorter:      sorter,
+		boxQuantities:  boxQuantities,
+		maxConcurrency: maxConcurrency,
 	}
 }
 
@@ -139,6 +141,7 @@ func (r *weightRedistributor) equaliseWeight(boxA, boxB *PackedBox, targetWeight
 
 func (r *weightRedistributor) doVolumeRepack(items []Item, currentBox Box) []*PackedBox {
 	packer := NewPacker()
+	packer.SetMaxConcurrency(r.maxConcurrency)
 	packer.boxes = append([]Box(nil), r.boxes...)
 	packer.boxQuantities = make(map[Box]int, len(r.boxQuantities))
 	for box, quantity := range r.boxQuantities {

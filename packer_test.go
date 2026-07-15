@@ -182,6 +182,30 @@ func TestUnpackableItemReturnsError(t *testing.T) {
 	}
 }
 
+func TestPackSortsPartialBoxesBeforeNoBoxesAvailableError(t *testing.T) {
+	packer := NewPacker()
+	packer.SetMaxBoxesToBalanceWeight(0)
+	packer.SetPackedBoxSorter(PackedBoxSorterFunc(func(a, b *PackedBox) int {
+		return a.ItemWeight() - b.ItemWeight()
+	}))
+	packer.AddBox(NewLimitedSupplyBox("Box", 1, 1, 3, 0, 1, 1, 3, 5, 2))
+	packer.AddItem(NewItem("Heavy", 1, 1, 1, 3, RotationNever), 1)
+	packer.AddItem(NewItem("Light", 1, 1, 1, 1, RotationNever), 6)
+
+	packed, err := packer.Pack()
+	var noBoxes *NoBoxesAvailableError
+	if !errors.As(err, &noBoxes) {
+		t.Fatalf("expected NoBoxesAvailableError, got %v", err)
+	}
+	if len(packed) != 2 {
+		t.Fatalf("partial box count = %d, want 2", len(packed))
+	}
+	weights := []int{packed[0].ItemWeight(), packed[1].ItemWeight()}
+	if !slices.Equal(weights, []int{3, 5}) {
+		t.Fatalf("partial box order = %v, want active-sorter order [3 5]", weights)
+	}
+}
+
 func TestAllowPartialResults(t *testing.T) {
 	packer := NewPacker()
 	packer.AllowPartialResults(true)
@@ -864,6 +888,59 @@ func TestManyBoxTypesParallelEvaluation(t *testing.T) {
 					run, i, again[i].Box.Reference(), len(again[i].Items), first[i].Box.Reference(), len(first[i].Items))
 			}
 		}
+	}
+}
+
+func TestQuantityShortCircuitPreservesSortTiedSignatures(t *testing.T) {
+	wantUnpackedSignature := signatureOf(NewItem("A", 1, 6, 6, 1, RotationBestFit))
+	pack := func(shortCircuit, allowPartial bool) ([]*PackedBox, []Item, error) {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.SetMaxBoxesToBalanceWeight(0)
+		packer.AllowPartialResults(allowPartial)
+		packer.AddBox(NewBox("box", 3, 6, 4, 0, 3, 6, 4, 1_000_000))
+		packable := NewItem("A", 2, 3, 6, 1, RotationBestFit)
+		unpackable := NewItem("A", 1, 6, 6, 1, RotationBestFit)
+		packer.AddItem(packable, 5)
+		packer.AddItem(unpackable, 5)
+		packer.AddItem(packable, 15)
+		boxes, err := packer.Pack()
+		return boxes, packer.UnpackedItems(), err
+	}
+
+	without, withoutUnpacked, err := pack(false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, withUnpacked, err := pack(true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := totalPackedItems(with); got != 20 {
+		t.Fatalf("short-circuit packed %d items, want the 20 supplied packable items", got)
+	}
+	if len(withUnpacked) != 5 {
+		t.Fatalf("short-circuit left %d unpacked items, want 5", len(withUnpacked))
+	}
+	for _, item := range withUnpacked {
+		if signatureOf(item) != wantUnpackedSignature {
+			t.Fatalf("short-circuit left unexpected item signature %+v", signatureOf(item))
+		}
+	}
+	if !slices.Equal(canonicalPacking(with), canonicalPacking(without)) {
+		t.Fatalf("short-circuit packing differs:\nwith=%v\nwithout=%v", canonicalPacking(with), canonicalPacking(without))
+	}
+	if len(withUnpacked) != len(withoutUnpacked) {
+		t.Fatalf("short-circuit unpacked %d items, want %d", len(withUnpacked), len(withoutUnpacked))
+	}
+
+	packed, unpacked, err := pack(true, false)
+	var noBoxes *NoBoxesAvailableError
+	if !errors.As(err, &noBoxes) {
+		t.Fatalf("short-circuit error = %v, want NoBoxesAvailableError", err)
+	}
+	if got := totalPackedItems(packed); got != 20 || len(unpacked) != 5 {
+		t.Fatalf("error result packed/unpacked = %d/%d, want 20/5", got, len(unpacked))
 	}
 }
 
