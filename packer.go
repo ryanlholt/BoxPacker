@@ -7,6 +7,15 @@ import (
 	"sync"
 )
 
+// Candidate solves have enough fixed goroutine overhead that very small item
+// pools are faster inline. Work is the sum of the post-cap item counts handed
+// to all candidate volume packers.
+const minimumParallelCandidateWork = 32
+
+func shouldEvaluateCandidatesInParallel(candidateCount, estimatedWork int) bool {
+	return candidateCount > 1 && estimatedWork >= minimumParallelCandidateWork
+}
+
 // NoBoxesAvailableError is returned by Pack when an item cannot fit into any
 // available box.
 type NoBoxesAvailableError struct {
@@ -153,22 +162,37 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 		candidates := p.candidateBoxes(enforceSingleBox)
 		p.items.ensureSorted() // so the per-candidate clones don't each re-sort
 		signatureCounts := p.items.signatureCounts()
-		results := make([]*PackedBox, len(candidates))
-		var wg sync.WaitGroup
+		packers := make([]*volumePacker, len(candidates))
+		estimatedWork := 0
 		for i, box := range candidates {
 			// clone on this goroutine: lazy sorting makes clones of the
 			// shared list unsafe to take concurrently
-			packer := newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
-			wg.Add(1)
-			go func(i int, packer *volumePacker) {
-				defer wg.Done()
-				if p.boxEvaluationObserver != nil {
-					p.boxEvaluationObserver(packer.box)
-				}
-				results[i] = packer.pack()
-			}(i, packer)
+			packers[i] = newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
+			estimatedWork += packers[i].items.count()
 		}
-		wg.Wait()
+
+		results := make([]*PackedBox, len(candidates))
+		evaluate := func(i int, packer *volumePacker) {
+			if p.boxEvaluationObserver != nil {
+				p.boxEvaluationObserver(packer.box)
+			}
+			results[i] = packer.pack()
+		}
+		if !shouldEvaluateCandidatesInParallel(len(packers), estimatedWork) {
+			for i, packer := range packers {
+				evaluate(i, packer)
+			}
+		} else {
+			var wg sync.WaitGroup
+			for i, packer := range packers {
+				wg.Add(1)
+				go func(i int, packer *volumePacker) {
+					defer wg.Done()
+					evaluate(i, packer)
+				}(i, packer)
+			}
+			wg.Wait()
+		}
 
 		var iteration []*PackedBox
 		for _, packedBox := range results {
@@ -302,7 +326,7 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	// holds a single item type that leads the sorted pool, those items are the
 	// sorted prefix and can be dropped cheaply; otherwise fall back to a
 	// signature-aware removal.
-	if sig, uniform := uniformPackedSignature(template.Items); uniform && signatureOf(p.items.top()) == sig {
+	if sig, uniform := uniformPackedSignature(template.Items); uniform && signatureOf(p.items.top()) == sig && !hasSortTiedSignature(sig, poolCounts) {
 		p.items.removeFirstN(perBox * replications)
 	} else {
 		toRemove := make(map[itemSignature]int, len(boxCounts))

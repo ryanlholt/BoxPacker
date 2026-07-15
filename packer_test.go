@@ -882,6 +882,62 @@ func TestManyBoxTypesParallelEvaluation(t *testing.T) {
 	}
 }
 
+func TestTinyCandidateEvaluationStaysSerial(t *testing.T) {
+	if shouldEvaluateCandidatesInParallel(2, 2) {
+		t.Fatal("two one-item candidates unexpectedly qualify for parallel evaluation")
+	}
+	if !shouldEvaluateCandidatesInParallel(19, 190) {
+		t.Fatal("representative many-candidate workload should qualify for parallel evaluation")
+	}
+}
+
+func TestQuantityShortCircuitPreservesSortTiedSignatures(t *testing.T) {
+	pack := func(shortCircuit, allowPartial bool) ([]*PackedBox, []Item, error) {
+		packer := NewPacker()
+		packer.SetQuantityShortCircuit(shortCircuit)
+		packer.SetMaxBoxesToBalanceWeight(0)
+		packer.AllowPartialResults(allowPartial)
+		packer.AddBox(NewBox("box", 3, 6, 4, 0, 3, 6, 4, 1_000_000))
+		packable := NewItem("A", 2, 3, 6, 1, RotationBestFit)
+		unpackable := NewItem("A", 1, 6, 6, 1, RotationBestFit)
+		packer.AddItem(packable, 5)
+		packer.AddItem(unpackable, 5)
+		packer.AddItem(packable, 15)
+		boxes, err := packer.Pack()
+		return boxes, packer.UnpackedItems(), err
+	}
+
+	without, withoutUnpacked, err := pack(false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, withUnpacked, err := pack(true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := totalPackedItems(with); got != 20 {
+		t.Fatalf("short-circuit packed %d items, want the 20 supplied packable items", got)
+	}
+	if len(withUnpacked) != 5 {
+		t.Fatalf("short-circuit left %d unpacked items, want 5", len(withUnpacked))
+	}
+	if !slices.Equal(canonicalPacking(with), canonicalPacking(without)) {
+		t.Fatalf("short-circuit packing differs:\nwith=%v\nwithout=%v", canonicalPacking(with), canonicalPacking(without))
+	}
+	if len(withUnpacked) != len(withoutUnpacked) {
+		t.Fatalf("short-circuit unpacked %d items, want %d", len(withUnpacked), len(withoutUnpacked))
+	}
+
+	packed, unpacked, err := pack(true, false)
+	var noBoxes *NoBoxesAvailableError
+	if !errors.As(err, &noBoxes) {
+		t.Fatalf("short-circuit error = %v, want NoBoxesAvailableError", err)
+	}
+	if got := totalPackedItems(packed); got != 20 || len(unpacked) != 5 {
+		t.Fatalf("error result packed/unpacked = %d/%d, want 20/5", got, len(unpacked))
+	}
+}
+
 func BenchmarkLargeQuantity(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		packer := NewPacker()

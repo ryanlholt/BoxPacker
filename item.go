@@ -96,6 +96,25 @@ func signatureOf(item Item) itemSignature {
 	}
 }
 
+// hasSortTiedSignature reports whether a physically different signature is
+// indistinguishable from target to compareItems. Stable sorting may interleave
+// such items, so seeing target at the head does not prove a whole prefix has
+// that signature.
+func hasSortTiedSignature(target itemSignature, counts map[itemSignature]int) bool {
+	targetVolume := target.width * target.length * target.depth
+	for candidate := range counts {
+		if candidate == target {
+			continue
+		}
+		if candidate.width*candidate.length*candidate.depth == targetVolume &&
+			candidate.weight == target.weight &&
+			candidate.description == target.description {
+			return true
+		}
+	}
+	return false
+}
+
 // itemList is a list of items to be packed, ordered largest-first.
 type itemList struct {
 	list     []Item
