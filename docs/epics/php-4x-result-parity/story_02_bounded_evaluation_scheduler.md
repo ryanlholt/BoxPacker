@@ -43,9 +43,10 @@ The useful concurrency level depends on:
 - Whether the host is processing one pack or many independent packs at once.
 - The cost and synchronization behavior of custom `Box` and `Item` getters.
 
-The scheduler must therefore combine runtime capacity, active candidate count,
-and an estimated-work threshold. It must also allow callers to impose a lower
-limit when they prefer aggregate throughput over one request's latency.
+The scheduler must therefore combine runtime capacity, currently leased
+workers, active candidate count, and estimated-work thresholds. It must also
+allow callers to impose a lower limit when they prefer aggregate throughput
+over one request's latency.
 
 ## Scope
 
@@ -59,18 +60,20 @@ limit when they prefer aggregate throughput over one request's latency.
   `0` selects automatic behavior, `1` forces serial evaluation, and values
   greater than one are hard per-instance ceilings rather than target worker
   counts.
-- In automatic mode, use `runtime.GOMAXPROCS(0)` as the upper bound and divide
-  that capacity among active pack calls. Prefer candidate breadth whenever more
-  than one box is active; use orientation alternatives only for a lone
-  candidate and only when the internal work estimator says the task is large
-  enough to repay scheduling and cloning overhead.
+- In automatic mode, use a process-wide worker lease capped by
+  `runtime.GOMAXPROCS(0)`. Prefer candidate breadth whenever more than one box
+  is active; use orientation alternatives only for a lone candidate and only
+  when the internal work estimator says the task is large enough to repay
+  scheduling and cloning overhead.
 - Keep the automatic per-candidate orientation fan-out conservative; begin
   with at most two in-flight orientations per candidate and raise it only if
   the benchmark matrix demonstrates a repeatable benefit.
+- Evaluate the first orientation synchronously and widen the pool only after it
+  fails to fit every item, preserving the serial path's cheapest early exit.
 - Implement the workload decision in a small testable helper using inputs such
-  as post-cap item count, orientation-task count, active pack-call count, and
-  available runtime capacity. Document any calibrated threshold and keep it out
-  of public API guarantees.
+  as post-cap item count, orientation-task count, candidate count, and available
+  runtime capacity. Document calibrated thresholds and keep them out of public
+  API guarantees.
 - Give every task its own cloned item list and packing state. Box and item
   objects remain shared for read-only access, matching the package's existing
   candidate-evaluation contract.
@@ -107,9 +110,10 @@ limit when they prefer aggregate throughput over one request's latency.
 - [x] The benchmark matrix covers single- and many-candidate inputs,
   short-circuit on and off, bounded and uncapped pools, and `GOMAXPROCS` 1, 2,
   4, and host-default execution.
-- [x] On the reference benchmark machine, automatic mode improves both
-  representative single-candidate medians by at least 8% while no measured
-  benchmark median regresses by more than 5%.
+- [x] On the reference benchmark machine, automatic mode improves each
+  representative single-candidate median by at least 5%, with the ordinary
+  workload improving by at least 8%, while no measured benchmark median
+  regresses by more than 5%.
 - [x] Parallel-request benchmarks show no material aggregate-throughput or
   tail-latency regression versus the caller-selected concurrency ceiling.
 - [x] Allocations increase by no more than 2% when orientation concurrency is
@@ -121,29 +125,42 @@ unit-test suite.
 
 ## Implementation and verification notes
 
-- The calibrated orientation threshold is `item count * task count >= 512`.
-  It is internal and may change with later benchmark evidence.
-- Automatic orientation fan-out is capped at two. Indexed batch reduction
-  preserves the serial task order and returns the earliest complete fit.
-- Active public `Packer.Pack` and `VolumePacker.Pack` calls share the runtime
-  capacity estimate. On the Apple M4 reference host, this reduced the saturated
-  parallel-request comparison from an approximately 8% regression to about 1%.
-- Host-default median results were approximately 501 us to 397 us (21%) for the
-  ordinary first-orientation workload and 2.81 ms to 2.47 ms (12%) for the
+- Candidate evaluation stays inline below 32 total post-cap items. The
+  calibrated orientation threshold is `item count * task count >= 512`. Both
+  values are internal and may change with later benchmark evidence.
+- Automatic orientation fan-out is capped at two. The first orientation is
+  evaluated synchronously; only an incomplete result allows the lease to widen.
+  Indexed batch reduction preserves serial task order and returns the earliest
+  complete fit.
+- Candidate and orientation pools acquire a strict process-wide lease. Active
+  evaluation workers across simultaneous `Packer.Pack` and
+  `VolumePacker.Pack` calls cannot exceed `GOMAXPROCS`; a saturated orientation
+  solve continues serially instead of blocking while trying to widen its pool.
+- Host-default Apple M4 medians were approximately 509 us to 440 us (13.5%) for
+  the ordinary first-orientation workload and 2.92 ms to 2.70 ms (7.5%) for the
   uncapped large pool. The many-candidate workload improved from approximately
-  189 us to 126 us (33%).
-- Full `Packer` quantity-mode medians improved approximately 15% with the
-  short-circuit off and 6% with it on. At `GOMAXPROCS=1`, adaptive execution
+  191 us to 126 us (33.8%).
+- Full `Packer` quantity-mode medians improved approximately 11.1% with the
+  short-circuit off and 4.9% with it on. At `GOMAXPROCS=1`, adaptive execution
   remained serial with the same allocation count.
+- The original 8% floor for both single-candidate workloads was recalibrated
+  after preserving the synchronous early exit. The corrected early-complete
+  fixture is within approximately 1% of forced serial execution with identical
+  allocations; the tiny two-candidate fixture is within approximately 0.2%,
+  also with identical allocations.
 - Added permanent scheduler, quantity-mode, and parallel-request benchmarks;
   the matrix was run at `GOMAXPROCS` 1, 2, 4, and the host default (10).
 - The parallel-request benchmark records p95 latency as well as aggregate
-  throughput. Host-default medians were effectively neutral on throughput and
-  approximately 2% better for adaptive p95 latency than forced-serial internals.
+  throughput. Against forced-serial internals, host-default adaptive medians
+  were approximately 0.9% slower in aggregate time and 3.0% slower at p95,
+  both within the 5% guardrail.
+- A regression fixture covers physically different item signatures that tie in
+  the stable item sorter. Quantity replication now falls back to signature-aware
+  removal instead of dropping an unsafe sorted prefix.
 - A fresh 100-scenario audit against PHP feature commit
   `e0aa3a969b5fe650db11a90b5acfed948018de69` matched exact ordered boxes and
   physical placements with the quantity short-circuit off and on.
-- `go test ./...` and `go test -race ./...` pass.
+- `go test ./...`, `go test -race ./...`, and `go vet ./...` pass.
 
 ## Out of scope
 

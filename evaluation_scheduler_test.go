@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestEvaluationWorkerBudgets(t *testing.T) {
@@ -12,17 +13,18 @@ func TestEvaluationWorkerBudgets(t *testing.T) {
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 
 	for _, test := range []struct {
-		name                                string
-		configured, candidates, wantWorkers int
+		name                                      string
+		configured, candidates, work, wantWorkers int
 	}{
-		{"automatic uses runtime candidate capacity", 0, 6, 4},
-		{"configured ceiling", 2, 6, 2},
-		{"serial ceiling", 1, 6, 1},
-		{"fewer candidates than capacity", 0, 2, 2},
-		{"no candidates", 0, 0, 0},
+		{"automatic uses runtime candidate capacity", 0, 6, 600, 4},
+		{"configured ceiling", 2, 6, 600, 2},
+		{"serial ceiling", 1, 6, 600, 1},
+		{"fewer candidates than capacity", 0, 2, 200, 2},
+		{"small candidate work stays serial", 0, 2, 2, 1},
+		{"no candidates", 0, 0, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := candidateEvaluationWorkers(test.configured, test.candidates); got != test.wantWorkers {
+			if got := candidateEvaluationWorkers(test.configured, test.candidates, test.work); got != test.wantWorkers {
 				t.Fatalf("candidate workers = %d, want %d", got, test.wantWorkers)
 			}
 		})
@@ -49,7 +51,7 @@ func TestEvaluationWorkerBudgets(t *testing.T) {
 	}
 
 	runtime.GOMAXPROCS(1)
-	if got := candidateEvaluationWorkers(0, 6); got != 1 {
+	if got := candidateEvaluationWorkers(0, 6, 600); got != 1 {
 		t.Fatalf("single-CPU candidate workers = %d, want 1", got)
 	}
 	if got := orientationEvaluationWorkers(0, 106, 12, false); got != 1 {
@@ -57,29 +59,53 @@ func TestEvaluationWorkerBudgets(t *testing.T) {
 	}
 }
 
-func TestAdaptiveSchedulerSharesRuntimeAcrossPackingCalls(t *testing.T) {
-	previous := runtime.GOMAXPROCS(8)
+func TestEvaluationWorkerBudgetBlocksAtRuntimeLimit(t *testing.T) {
+	previous := runtime.GOMAXPROCS(4)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 
-	activePackingCalls.Store(4)
-	t.Cleanup(func() { activePackingCalls.Store(0) })
+	firstLease := sharedEvaluationWorkers.acquire(4)
+	firstReleased := false
+	t.Cleanup(func() {
+		if !firstReleased {
+			sharedEvaluationWorkers.release(firstLease)
+		}
+	})
 
-	if got := candidateEvaluationWorkers(0, 10); got != 2 {
-		t.Fatalf("automatic workers = %d, want fair share 2", got)
+	secondLease := make(chan int, 1)
+	go func() {
+		workers := sharedEvaluationWorkers.acquire(2)
+		sharedEvaluationWorkers.release(workers)
+		secondLease <- workers
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, waiting := sharedEvaluationWorkers.snapshot()
+		if active == 4 && waiting == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("budget state = active %d, waiting %d; want 4/1", active, waiting)
+		}
+		runtime.Gosched()
 	}
-	if got := candidateEvaluationWorkers(4, 10); got != 2 {
-		t.Fatalf("configured workers = %d, want runtime-limited fair share 2", got)
-	}
-	if got := orientationEvaluationWorkers(0, 106, 12, false); got != 2 {
-		t.Fatalf("orientation workers = %d, want fair share 2", got)
+	if workers := sharedEvaluationWorkers.tryAcquire(1); workers != 0 {
+		sharedEvaluationWorkers.release(workers)
+		t.Fatalf("non-blocking lease acquired %d workers at the runtime limit, want 0", workers)
 	}
 
-	activePackingCalls.Store(8)
-	if got := candidateEvaluationWorkers(0, 10); got != 1 {
-		t.Fatalf("saturated workers = %d, want serial 1", got)
+	sharedEvaluationWorkers.release(firstLease)
+	firstReleased = true
+	select {
+	case workers := <-secondLease:
+		if workers != 2 {
+			t.Fatalf("second lease = %d workers, want 2", workers)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second lease remained blocked after capacity was released")
 	}
-	if got := orientationEvaluationWorkers(0, 106, 12, false); got != 1 {
-		t.Fatalf("saturated orientation workers = %d, want serial 1", got)
+	if active, waiting := sharedEvaluationWorkers.snapshot(); active != 0 || waiting != 0 {
+		t.Fatalf("final budget state = active %d, waiting %d; want 0/0", active, waiting)
 	}
 }
 
@@ -192,9 +218,18 @@ func TestParallelReductionPreservesEarliestCompleteFit(t *testing.T) {
 
 	parallel := NewVolumePacker(box, items)
 	parallel.SetMaxConcurrency(2)
+	var evaluations atomic.Int64
+	parallel.inner.schedulerObserver = func(kind evaluationKind, _ int) {
+		if kind == evaluationOrientation {
+			evaluations.Add(1)
+		}
+	}
 	got := phpParityResult([]*PackedBox{parallel.Pack()})
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parallel complete-fit reduction differs:\ngot=%v\nwant=%v", got, want)
+	}
+	if got := evaluations.Load(); got != 1 {
+		t.Fatalf("complete-fit path evaluated %d orientations, want exactly 1", got)
 	}
 }
 

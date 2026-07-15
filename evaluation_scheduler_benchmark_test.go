@@ -31,6 +31,21 @@ func BenchmarkAdaptiveFirstOrientationScheduler(b *testing.B) {
 	}
 }
 
+func BenchmarkAdaptiveEarlyCompleteFitScheduler(b *testing.B) {
+	for _, maxConcurrency := range []int{1, 0} {
+		mode := "serial"
+		if maxConcurrency == 0 {
+			mode = "adaptive"
+		}
+		b.Run(mode, func(b *testing.B) {
+			for b.Loop() {
+				packer := schedulerBenchmarkEarlyCompleteFit(maxConcurrency)
+				benchmarkPackedBoxSink = packer.Pack()
+			}
+		})
+	}
+}
+
 func BenchmarkAdaptiveManyCandidateScheduler(b *testing.B) {
 	for _, maxConcurrency := range []int{1, 0} {
 		mode := "serial"
@@ -40,6 +55,24 @@ func BenchmarkAdaptiveManyCandidateScheduler(b *testing.B) {
 		b.Run(mode, func(b *testing.B) {
 			for b.Loop() {
 				packer := schedulerBenchmarkManyCandidates(maxConcurrency)
+				benchmarkPackedBoxesSink, benchmarkErrorSink = packer.Pack()
+				if benchmarkErrorSink != nil {
+					b.Fatal(benchmarkErrorSink)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkAdaptiveTinyCandidateScheduler(b *testing.B) {
+	for _, maxConcurrency := range []int{1, 0} {
+		mode := "serial"
+		if maxConcurrency == 0 {
+			mode = "adaptive"
+		}
+		b.Run(mode, func(b *testing.B) {
+			for b.Loop() {
+				packer := schedulerBenchmarkTinyCandidates(maxConcurrency)
 				benchmarkPackedBoxesSink, benchmarkErrorSink = packer.Pack()
 				if benchmarkErrorSink != nil {
 					b.Fatal(benchmarkErrorSink)
@@ -126,6 +159,18 @@ func schedulerBenchmarkVolumePacker(multiplier int) *VolumePacker {
 	return NewVolumePacker(box, items)
 }
 
+func schedulerBenchmarkEarlyCompleteFit(maxConcurrency int) *VolumePacker {
+	box := NewBox("cube", 500, 500, 500, 0, 500, 500, 500, 10_000)
+	item := NewItem("item", 10, 20, 30, 1, RotationBestFit)
+	items := make([]Item, 100)
+	for index := range items {
+		items[index] = item
+	}
+	packer := NewVolumePacker(box, items)
+	packer.SetMaxConcurrency(maxConcurrency)
+	return packer
+}
+
 func schedulerBenchmarkManyCandidates(maxConcurrency int) *Packer {
 	packer := NewPacker()
 	packer.SetMaxConcurrency(maxConcurrency)
@@ -135,5 +180,15 @@ func schedulerBenchmarkManyCandidates(maxConcurrency int) *Packer {
 	}
 	packer.AddItem(NewItem("widget", 100, 100, 50, 100, RotationBestFit), 4)
 	packer.AddItem(NewItem("gadget", 50, 50, 50, 50, RotationBestFit), 6)
+	return packer
+}
+
+func schedulerBenchmarkTinyCandidates(maxConcurrency int) *Packer {
+	packer := NewPacker()
+	packer.SetMaxConcurrency(maxConcurrency)
+	packer.SetMaxBoxesToBalanceWeight(0)
+	packer.AddBox(NewBox("small", 10, 10, 10, 0, 10, 10, 10, 100))
+	packer.AddBox(NewBox("large", 20, 20, 20, 0, 20, 20, 20, 100))
+	packer.AddItem(NewItem("item", 1, 1, 1, 1, RotationBestFit), 1)
 	return packer
 }

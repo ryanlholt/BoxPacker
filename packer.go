@@ -129,9 +129,6 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
-	endPackingCall := beginPackingCall()
-	defer endPackingCall()
-
 	packedBoxes, err := p.packBasic(false)
 	if err != nil {
 		return packedBoxes, err
@@ -226,7 +223,13 @@ func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
 		return results
 	}
 
-	workers := candidateEvaluationWorkers(p.maxConcurrency, len(packers))
+	estimatedWork := 0
+	for _, packer := range packers {
+		estimatedWork += packer.items.count()
+	}
+	desiredWorkers := candidateEvaluationWorkers(p.maxConcurrency, len(packers), estimatedWork)
+	workers := sharedEvaluationWorkers.acquire(desiredWorkers)
+	defer sharedEvaluationWorkers.release(workers)
 	if workers <= 1 {
 		for index, packer := range packers {
 			observeBox(packer)
@@ -367,7 +370,9 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	// holds a single item type that leads the sorted pool, those items are the
 	// sorted prefix and can be dropped cheaply; otherwise fall back to a
 	// signature-aware removal.
-	if sig, uniform := uniformPackedSignature(template.Items); uniform && signatureOf(p.items.top()) == sig {
+	if sig, uniform := uniformPackedSignature(template.Items); uniform &&
+		signatureOf(p.items.top()) == sig &&
+		!hasSortTiedSignature(sig, poolCounts) {
 		p.items.removeFirstN(perBox * replications)
 	} else {
 		toRemove := make(map[itemSignature]int, len(boxCounts))

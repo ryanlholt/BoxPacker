@@ -2,10 +2,14 @@ package boxpacker
 
 import (
 	"runtime"
-	"sync/atomic"
+	"sync"
 )
 
 const (
+	// Candidate solves have enough fixed goroutine overhead that very small
+	// post-cap item pools are faster inline.
+	minimumParallelCandidateWork = 32
+
 	// Parallel orientation solves clone and traverse the item pool. Below this
 	// amount of estimated work, scheduler overhead is more expensive than the
 	// useful CPU overlap on the benchmarked workloads.
@@ -27,25 +31,76 @@ const (
 // of tasks currently executing in the one active scheduler pool.
 type evaluationSchedulerObserver func(kind evaluationKind, active int)
 
-// activePackingCalls lets automatic scheduling share the runtime budget across
-// independent callers. It is deliberately process-local and advisory: an
-// explicit maximum remains a per-instance ceiling, while a busy process may
-// use fewer workers than that ceiling.
-var activePackingCalls atomic.Int64
+// evaluationWorkerBudget is a process-wide lease for active evaluation
+// workers. A pool may receive fewer workers than it requested, and waits when
+// every GOMAXPROCS slot is already leased by other pack calls.
+type evaluationWorkerBudget struct {
+	mutex     sync.Mutex
+	condition *sync.Cond
+	active    int
+	waiting   int
+}
 
-func beginPackingCall() func() {
-	activePackingCalls.Add(1)
-	return func() {
-		activePackingCalls.Add(-1)
+func newEvaluationWorkerBudget() *evaluationWorkerBudget {
+	budget := &evaluationWorkerBudget{}
+	budget.condition = sync.NewCond(&budget.mutex)
+	return budget
+}
+
+var sharedEvaluationWorkers = newEvaluationWorkerBudget()
+
+func (b *evaluationWorkerBudget) acquire(requested int) int {
+	if requested < 1 {
+		return 0
 	}
+
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	limit := runtime.GOMAXPROCS(0)
+	for b.active >= limit {
+		b.waiting++
+		b.condition.Wait()
+		b.waiting--
+		limit = runtime.GOMAXPROCS(0)
+	}
+	granted := minInt(requested, limit-b.active)
+	b.active += granted
+	return granted
+}
+
+func (b *evaluationWorkerBudget) tryAcquire(requested int) int {
+	if requested < 1 {
+		return 0
+	}
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	available := runtime.GOMAXPROCS(0) - b.active
+	if available < 1 {
+		return 0
+	}
+	granted := minInt(requested, available)
+	b.active += granted
+	return granted
+}
+
+func (b *evaluationWorkerBudget) release(workers int) {
+	if workers < 1 {
+		return
+	}
+	b.mutex.Lock()
+	b.active -= workers
+	b.condition.Broadcast()
+	b.mutex.Unlock()
+}
+
+func (b *evaluationWorkerBudget) snapshot() (active, waiting int) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.active, b.waiting
 }
 
 func configuredConcurrencyLimit(maxConcurrency int) int {
-	activeCalls := int(activePackingCalls.Load())
-	if activeCalls < 1 {
-		activeCalls = 1
-	}
-	limit := runtime.GOMAXPROCS(0) / activeCalls
+	limit := runtime.GOMAXPROCS(0)
 	if limit < 1 {
 		limit = 1
 	}
@@ -55,9 +110,12 @@ func configuredConcurrencyLimit(maxConcurrency int) int {
 	return limit
 }
 
-func candidateEvaluationWorkers(maxConcurrency, candidateCount int) int {
+func candidateEvaluationWorkers(maxConcurrency, candidateCount, estimatedWork int) int {
 	if candidateCount < 1 {
 		return 0
+	}
+	if candidateCount == 1 || estimatedWork < minimumParallelCandidateWork {
+		return 1
 	}
 	return minInt(candidateCount, configuredConcurrencyLimit(maxConcurrency))
 }

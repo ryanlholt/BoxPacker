@@ -51,9 +51,6 @@ func (vp *VolumePacker) SetMaxConcurrency(maxConcurrency int) {
 
 // Pack runs the packing and returns the resulting packed box.
 func (vp *VolumePacker) Pack() *PackedBox {
-	endPackingCall := beginPackingCall()
-	defer endPackingCall()
-
 	return vp.inner.pack()
 }
 
@@ -133,7 +130,35 @@ func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluat
 	}
 	tasks := vp.evaluationTasks()
 	workers := orientationEvaluationWorkers(maxConcurrency, vp.items.count(), len(tasks), vp.singlePassMode)
-	return vp.reduceEvaluationTasks(tasks, workers, observer)
+	if vp.singlePassMode {
+		// Lookahead executes inside its parent's evaluation-worker lease and must
+		// not recursively acquire another slot.
+		return vp.reduceEvaluationTasks(tasks, 1, observer)
+	}
+	leasedWorkers := sharedEvaluationWorkers.acquire(1)
+	defer func() { sharedEvaluationWorkers.release(leasedWorkers) }()
+	if workers <= 1 {
+		return vp.reduceEvaluationTasks(tasks, 1, observer)
+	}
+
+	// Preserve the serial algorithm's cheapest and most common early exit. If
+	// the first orientation fits everything, do not speculatively solve a second
+	// orientation and wait for work whose result cannot be selected.
+	first := vp.reduceEvaluationTasks(tasks[:1], 1, observer)
+	if len(first.Items) == vp.items.count() || len(tasks) == 1 {
+		return first
+	}
+
+	// Do not queue behind other pack calls merely to widen this pool. The one
+	// leased worker can continue serially under saturation; otherwise claim any
+	// immediately spare capacity up to the per-instance ceiling.
+	remainingWorkerLimit := minInt(workers, len(tasks)-1)
+	leasedWorkers += sharedEvaluationWorkers.tryAcquire(remainingWorkerLimit - leasedWorkers)
+	remaining := vp.reduceEvaluationTasks(tasks[1:], leasedWorkers, observer)
+	if len(remaining.Items) == vp.items.count() || remaining.VolumeUtilisation() > first.VolumeUtilisation() {
+		return remaining
+	}
+	return first
 }
 
 func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, workers int, observer evaluationSchedulerObserver) *PackedBox {

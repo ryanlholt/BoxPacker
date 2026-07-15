@@ -80,17 +80,21 @@ reduction, runtime/workload-aware bounds, and a serial override.
 
 - Exact feature-branch golden corpus and a fresh deterministic 100-scenario
   PHP/Go audit in both quantity short-circuit modes.
-- Adaptive worker-budget, configured-ceiling, earliest-complete-fit,
-  deterministic-repeat, and synchronous-lookahead tests.
+- Strict process-wide worker-lease, configured-ceiling, tiny-work inline,
+  earliest-complete-fit, deterministic-repeat, and synchronous-lookahead tests.
 - Permanent single-candidate, many-candidate, bounded/uncapped quantity, and
   parallel-request benchmarks at `GOMAXPROCS` 1, 2, 4, and host default.
-- Apple M4 host-default median improvements of approximately 21% for the
-  ordinary orientation workload, 12% for its large uncapped pool, and 33% for
-  the many-candidate workload.
-- Saturated parallel-request throughput remained effectively neutral and p95
-  latency improved approximately 2% after sharing runtime capacity among
-  active pack calls.
-- `go test ./...` and `go test -race ./...`.
+- Apple M4 host-default median improvements of approximately 13.5% for the
+  ordinary orientation workload, 7.5% for its large uncapped pool, and 33.8%
+  for the many-candidate workload after restoring the synchronous early exit.
+- Tiny-candidate and early-complete regressions are approximately 0.2% and 1%,
+  respectively, with allocation counts identical to forced-serial execution.
+- Saturated parallel-request aggregate time and p95 latency were approximately
+  0.9% and 3.0% slower than forced-serial internals, within the 5% guardrail.
+- Quantity replication has a regression fixture for physically different
+  signatures that tie in the stable item sorter; packed and unpacked quantities
+  are preserved.
+- `go test ./...`, `go test -race ./...`, and `go vet ./...`.
 
 ## Out of scope
 

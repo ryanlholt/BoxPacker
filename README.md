@@ -123,7 +123,7 @@ types: identity is used to track items through packing.
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
 | `packer.SetQuantityShortCircuit(true)` | Enable lookahead-safe work bounding and, with the built-in sorter, guarded box replication for large quantities |
-| `packer.SetMaxConcurrency(n)` | Bound independent box/orientation evaluation: `0` adapts to runtime capacity and active pack calls, `1` is serial, and `n > 1` is a per-packer ceiling |
+| `packer.SetMaxConcurrency(n)` | Bound independent box/orientation evaluation: `0` adapts to runtime capacity and workload, `1` is serial, and `n > 1` is a per-packer ceiling |
 | `packer.SetMaxBoxesToBalanceWeight(n)` | Rebalance results containing at most `n` boxes by weight; use `0` to disable |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
 | `packer.SetPackedBoxSorter(sorter)` | Choose which box wins each iteration with a custom objective, e.g. minimising billable shipping weight (see below) |
@@ -132,11 +132,13 @@ types: identity is used to track items through packing.
 ### Concurrency
 
 Packing is deterministic regardless of the selected concurrency ceiling.
-Automatic mode (the default) uses `GOMAXPROCS` as an upper bound, shares that
-budget across simultaneous pack calls, and stays serial when the input is too
-small to repay scheduling overhead. Multiple candidate boxes use one bounded
-candidate pool; a single candidate may instead evaluate two first-item
-orientations concurrently. Recursive lookahead never creates nested workers.
+Automatic mode (the default) uses a process-wide worker lease capped by
+`GOMAXPROCS`, so simultaneous pack calls cannot collectively exceed the runtime
+budget. It stays serial when the input is too small to repay scheduling
+overhead. Multiple candidate boxes use one bounded candidate pool; a single
+candidate checks its first orientation synchronously and may then evaluate two
+remaining orientations concurrently. Recursive lookahead never creates nested
+workers.
 
 Use `SetMaxConcurrency(1)` when the caller already owns a worker pool and wants
 strictly serial work inside each request. Values greater than one are ceilings,
