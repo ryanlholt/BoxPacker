@@ -109,6 +109,95 @@ func TestEvaluationWorkerBudgetBlocksAtRuntimeLimit(t *testing.T) {
 	}
 }
 
+func TestEvaluationWorkerBudgetGrantsBlockingLeasesFIFO(t *testing.T) {
+	previous := runtime.GOMAXPROCS(2)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+
+	budget := newEvaluationWorkerBudget()
+	initialLease := budget.acquire(2)
+	initialReleased := false
+	t.Cleanup(func() {
+		if !initialReleased {
+			budget.release(initialLease)
+		}
+	})
+
+	type acquiredLease struct {
+		waiter  int
+		workers int
+	}
+	acquired := make(chan acquiredLease, 2)
+	done := make(chan struct{}, 2)
+	releaseWaiter := []chan struct{}{make(chan struct{}, 1), make(chan struct{}, 1)}
+	for _, release := range releaseWaiter {
+		release := release
+		t.Cleanup(func() {
+			select {
+			case release <- struct{}{}:
+			default:
+			}
+		})
+	}
+
+	startWaiter := func(waiter int) {
+		go func() {
+			workers := budget.acquire(2)
+			acquired <- acquiredLease{waiter: waiter, workers: workers}
+			<-releaseWaiter[waiter-1]
+			budget.release(workers)
+			done <- struct{}{}
+		}()
+	}
+	waitForState := func(wantWaiting int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			active, waiting := budget.snapshot()
+			if active == 2 && waiting == wantWaiting {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("budget state = active %d, waiting %d; want 2/%d", active, waiting, wantWaiting)
+			}
+			runtime.Gosched()
+		}
+	}
+
+	startWaiter(1)
+	waitForState(1)
+	startWaiter(2)
+	waitForState(2)
+
+	budget.release(initialLease)
+	initialReleased = true
+	if workers := budget.tryAcquire(1); workers != 0 {
+		budget.release(workers)
+		t.Fatalf("nonblocking lease bypassed queued waiters with %d worker", workers)
+	}
+
+	for wantWaiter := 1; wantWaiter <= 2; wantWaiter++ {
+		select {
+		case lease := <-acquired:
+			if lease.waiter != wantWaiter || lease.workers != 2 {
+				t.Fatalf("lease %d = waiter %d with %d workers, want waiter %d with 2 workers", wantWaiter, lease.waiter, lease.workers, wantWaiter)
+			}
+			releaseWaiter[wantWaiter-1] <- struct{}{}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d did not acquire its lease", wantWaiter)
+		}
+	}
+	for range 2 {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("lease waiter did not finish")
+		}
+	}
+	if active, waiting := budget.snapshot(); active != 0 || waiting != 0 {
+		t.Fatalf("final budget state = active %d, waiting %d; want 0/0", active, waiting)
+	}
+}
+
 func TestSetMaxConcurrencySemantics(t *testing.T) {
 	packer := NewPacker()
 	packer.SetMaxConcurrency(3)

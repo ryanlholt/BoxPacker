@@ -141,10 +141,14 @@ remaining orientations concurrently. Recursive lookahead never creates nested
 workers.
 
 Use `SetMaxConcurrency(1)` when the caller already owns a worker pool and wants
-strictly serial work inside each request. Values greater than one are ceilings,
-not promises that the packer will start that many workers. Custom `Box` and
-`Item` implementations must permit their getter methods to be called
-concurrently and must not be mutated during `Pack`.
+strictly serial work inside each request. Serial and below-threshold evaluations
+still lease one slot from the process-wide budget, so they can wait when other
+pack calls are using every `GOMAXPROCS` slot; `1` disables internal parallelism
+but does not bypass that bound. Blocking lease requests are served FIFO, and
+opportunistic orientation expansion does not jump queued requests. Values
+greater than one are ceilings, not promises that the packer will start that many
+workers. Custom `Box` and `Item` implementations must permit their getter
+methods to be called concurrently and must not be mutated during `Pack`.
 
 ### Rotation modes
 

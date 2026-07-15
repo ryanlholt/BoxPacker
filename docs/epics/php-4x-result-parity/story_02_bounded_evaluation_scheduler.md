@@ -65,6 +65,9 @@ over one request's latency.
   is active; use orientation alternatives only for a lone candidate and only
   when the internal work estimator says the task is large enough to repay
   scheduling and cloning overhead.
+- Count inline and explicitly serial top-level evaluations as one leased worker
+  so the process-wide limit remains hard under saturation. Serve blocking lease
+  requests FIFO and do not let opportunistic pool expansion bypass them.
 - Keep the automatic per-candidate orientation fan-out conservative; begin
   with at most two in-flight orientations per candidate and raise it only if
   the benchmark matrix demonstrates a repeatable benefit.
@@ -107,6 +110,8 @@ over one request's latency.
 - [x] Tests prove the shared worker count and per-candidate orientation count
   never exceed their budgets, and single-pass lookahead never recursively
   submits work.
+- [x] Blocking lease requests are served FIFO, and nonblocking orientation
+  expansion yields to an existing queue.
 - [x] The benchmark matrix covers single- and many-candidate inputs,
   short-circuit on and off, bounded and uncapped pools, and `GOMAXPROCS` 1, 2,
   4, and host-default execution.
@@ -136,6 +141,9 @@ unit-test suite.
   evaluation workers across simultaneous `Packer.Pack` and
   `VolumePacker.Pack` calls cannot exceed `GOMAXPROCS`; a saturated orientation
   solve continues serially instead of blocking while trying to widen its pool.
+  Even forced-serial and below-threshold evaluations lease one slot and may
+  briefly queue under saturation. Blocking acquisitions are FIFO, while
+  nonblocking pool expansion yields whenever a blocking request is queued.
 - Host-default Apple M4 medians were approximately 509 us to 440 us (13.5%) for
   the ordinary first-orientation workload and 2.92 ms to 2.70 ms (7.5%) for the
   uncapped large pool. The many-candidate workload improved from approximately
@@ -157,6 +165,9 @@ unit-test suite.
 - A regression fixture covers physically different item signatures that tie in
   the stable item sorter. Quantity replication now falls back to signature-aware
   removal instead of dropping an unsafe sorted prefix.
+- `Pack` now applies the active packed-box sorter to partial boxes before
+  returning them with `NoBoxesAvailableError`, just as it does on successful
+  paths.
 - A fresh 100-scenario audit against PHP feature commit
   `e0aa3a969b5fe650db11a90b5acfed948018de69` matched exact ordered boxes and
   physical placements with the quantity short-circuit off and on.

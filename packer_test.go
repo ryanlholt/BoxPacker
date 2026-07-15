@@ -182,6 +182,30 @@ func TestUnpackableItemReturnsError(t *testing.T) {
 	}
 }
 
+func TestPackSortsPartialBoxesBeforeNoBoxesAvailableError(t *testing.T) {
+	packer := NewPacker()
+	packer.SetMaxBoxesToBalanceWeight(0)
+	packer.SetPackedBoxSorter(PackedBoxSorterFunc(func(a, b *PackedBox) int {
+		return a.ItemWeight() - b.ItemWeight()
+	}))
+	packer.AddBox(NewLimitedSupplyBox("Box", 1, 1, 3, 0, 1, 1, 3, 5, 2))
+	packer.AddItem(NewItem("Heavy", 1, 1, 1, 3, RotationNever), 1)
+	packer.AddItem(NewItem("Light", 1, 1, 1, 1, RotationNever), 6)
+
+	packed, err := packer.Pack()
+	var noBoxes *NoBoxesAvailableError
+	if !errors.As(err, &noBoxes) {
+		t.Fatalf("expected NoBoxesAvailableError, got %v", err)
+	}
+	if len(packed) != 2 {
+		t.Fatalf("partial box count = %d, want 2", len(packed))
+	}
+	weights := []int{packed[0].ItemWeight(), packed[1].ItemWeight()}
+	if !slices.Equal(weights, []int{3, 5}) {
+		t.Fatalf("partial box order = %v, want active-sorter order [3 5]", weights)
+	}
+}
+
 func TestAllowPartialResults(t *testing.T) {
 	packer := NewPacker()
 	packer.AllowPartialResults(true)

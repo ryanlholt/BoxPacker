@@ -103,6 +103,8 @@ func (p *Packer) SetQuantityShortCircuit(enabled bool) {
 // this packer may execute concurrently. Zero selects adaptive behavior, one
 // forces serial evaluation, and values greater than one are hard ceilings
 // rather than target worker counts. Negative values restore adaptive behavior.
+// Serial evaluations still participate in the process-wide runtime budget and
+// may wait briefly when other pack calls have leased every available slot.
 func (p *Packer) SetMaxConcurrency(maxConcurrency int) {
 	if maxConcurrency < 0 {
 		maxConcurrency = 0
@@ -130,20 +132,18 @@ func (p *Packer) UnpackedItems() []Item {
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
 	packedBoxes, err := p.packBasic(false)
-	if err != nil {
-		return packedBoxes, err
-	}
-	if len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
+	if err == nil && len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
 		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities, p.maxConcurrency)
 		packedBoxes = redistributor.redistributeWeight(packedBoxes)
 	}
 	// PHP exposes a PackedBoxList that sorts lazily on iteration. Go returns a
 	// slice, so apply the active sorter before returning every result, including
-	// results for which weight redistribution is disabled or skipped.
+	// partial boxes returned alongside NoBoxesAvailableError and results for
+	// which weight redistribution is disabled or skipped.
 	sort.SliceStable(packedBoxes, func(i, j int) bool {
 		return p.boxSorter.Compare(packedBoxes[i], packedBoxes[j]) < 0
 	})
-	return packedBoxes, nil
+	return packedBoxes, err
 }
 
 // packBasic performs the greedy packing pass without post-pack weight

@@ -80,7 +80,7 @@ reduction, runtime/workload-aware bounds, and a serial override.
 
 - Exact feature-branch golden corpus and a fresh deterministic 100-scenario
   PHP/Go audit in both quantity short-circuit modes.
-- Strict process-wide worker-lease, configured-ceiling, tiny-work inline,
+- Strict process-wide FIFO worker-lease, configured-ceiling, tiny-work inline,
   earliest-complete-fit, deterministic-repeat, and synchronous-lookahead tests.
 - Permanent single-candidate, many-candidate, bounded/uncapped quantity, and
   parallel-request benchmarks at `GOMAXPROCS` 1, 2, 4, and host default.
@@ -94,6 +94,8 @@ reduction, runtime/workload-aware bounds, and a serial override.
 - Quantity replication has a regression fixture for physically different
   signatures that tie in the stable item sorter; packed and unpacked quantities
   are preserved.
+- Partial boxes returned with `NoBoxesAvailableError` are ordered by the active
+  packed-box sorter, matching every successful return path.
 - `go test ./...`, `go test -race ./...`, and `go vet ./...`.
 
 ## Out of scope

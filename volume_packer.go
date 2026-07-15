@@ -41,7 +41,9 @@ type VolumePacker struct {
 // SetMaxConcurrency sets the maximum number of evaluations this packer may
 // execute concurrently. Zero selects adaptive behavior, one forces serial
 // evaluation, and values greater than one are hard ceilings rather than target
-// worker counts. Negative values restore adaptive behavior.
+// worker counts. Negative values restore adaptive behavior. Serial evaluations
+// still participate in the process-wide runtime budget and may wait briefly
+// when other pack calls have leased every available slot.
 func (vp *VolumePacker) SetMaxConcurrency(maxConcurrency int) {
 	if maxConcurrency < 0 {
 		maxConcurrency = 0

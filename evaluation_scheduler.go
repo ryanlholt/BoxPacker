@@ -32,13 +32,15 @@ const (
 type evaluationSchedulerObserver func(kind evaluationKind, active int)
 
 // evaluationWorkerBudget is a process-wide lease for active evaluation
-// workers. A pool may receive fewer workers than it requested, and waits when
-// every GOMAXPROCS slot is already leased by other pack calls.
+// workers. A pool may receive fewer workers than it requested, and waits in
+// FIFO order when every GOMAXPROCS slot is already leased by other pack calls.
 type evaluationWorkerBudget struct {
-	mutex     sync.Mutex
-	condition *sync.Cond
-	active    int
-	waiting   int
+	mutex         sync.Mutex
+	condition     *sync.Cond
+	active        int
+	waiting       int
+	nextTicket    uint64
+	servingTicket uint64
 }
 
 func newEvaluationWorkerBudget() *evaluationWorkerBudget {
@@ -57,14 +59,25 @@ func (b *evaluationWorkerBudget) acquire(requested int) int {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	limit := runtime.GOMAXPROCS(0)
-	for b.active >= limit {
-		b.waiting++
+	if b.waiting == 0 && b.active < limit {
+		granted := minInt(requested, limit-b.active)
+		b.active += granted
+		return granted
+	}
+
+	ticket := b.nextTicket
+	b.nextTicket++
+	b.waiting++
+	for ticket != b.servingTicket || b.active >= limit {
 		b.condition.Wait()
-		b.waiting--
 		limit = runtime.GOMAXPROCS(0)
 	}
 	granted := minInt(requested, limit-b.active)
 	b.active += granted
+	b.waiting--
+	b.servingTicket++
+	// The next waiter may be able to use capacity left by a partial grant.
+	b.condition.Broadcast()
 	return granted
 }
 
@@ -74,6 +87,11 @@ func (b *evaluationWorkerBudget) tryAcquire(requested int) int {
 	}
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	// Opportunistic pool expansion must not jump blocking pack calls that have
+	// already queued for their first worker.
+	if b.waiting > 0 {
+		return 0
+	}
 	available := runtime.GOMAXPROCS(0) - b.active
 	if available < 1 {
 		return 0

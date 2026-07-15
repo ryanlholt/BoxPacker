@@ -277,21 +277,6 @@ func (l *itemList) removeSignatureMultiset(toRemove map[itemSignature]int) {
 	l.list = out
 }
 
-// uniformSignature reports whether every item in the list is physically
-// interchangeable, and if so what the common signature is.
-func (l *itemList) uniformSignature() (itemSignature, bool) {
-	if len(l.list) == 0 {
-		return itemSignature{}, false
-	}
-	sig := signatureOf(l.list[0])
-	for _, item := range l.list[1:] {
-		if signatureOf(item) != sig {
-			return itemSignature{}, false
-		}
-	}
-	return sig, true
-}
-
 // isSameDimensions reports whether two items have the same dimensions in any
 // orientation.
 func isSameDimensions(a, b Item) bool {
