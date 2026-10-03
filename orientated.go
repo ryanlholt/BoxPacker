@@ -4,7 +4,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // orientatedItem is an item in a specific orientation.
@@ -37,7 +36,7 @@ func (o *orientatedItem) isSameDimensions(item Item) bool {
 
 // emptyBoxStableCache caches whether an item has any stable orientation in an
 // otherwise empty box. Keyed by item dimensions/rotation and box dimensions.
-var emptyBoxStableCache sync.Map // string -> bool
+var emptyBoxStableCache = newBoundedCache(1024)
 
 // orientatedItemFactory works out which orientations an item can be placed in
 // within a given box, and which of those is best for a given context.
@@ -165,13 +164,14 @@ func (f *orientatedItemFactory) hasStableOrientationsInEmptyBox(item Item) bool 
 
 func generatePermutations(item Item, prevItem *orientatedItem) [][3]int {
 	// Special case items that are the same as what we just packed - keep orientation
-	if prevItem != nil && prevItem.isSameDimensions(item) {
+	if prevItem != nil && prevItem.isSameDimensions(item) && allowedOrientation(item, prevItem.width, prevItem.length, prevItem.depth) {
 		return [][3]int{{prevItem.width, prevItem.length, prevItem.depth}}
 	}
 
 	w, l, d := item.Width(), item.Length(), item.Depth()
 
-	permutations := [][3]int{{w, l, d}}
+	permutations := make([][3]int, 1, 6)
+	permutations[0] = [3]int{w, l, d}
 
 	addUnique := func(dims [3]int) {
 		for _, existing := range permutations {
@@ -196,7 +196,7 @@ func generatePermutations(item Item, prevItem *orientatedItem) [][3]int {
 
 // lookaheadCache caches forward-looking packing approximations, keyed by the
 // available space and the dimensions of the upcoming items.
-var lookaheadCache sync.Map // string -> int
+var lookaheadCache = newBoundedCache(4096)
 
 // orientationLookaheadDepth is the maximum number of upcoming items used to
 // score an orientation. Quantity capping must retain at least this much
@@ -299,7 +299,7 @@ func (s *orientatedItemSorter) additionalItemsPacked(prev *orientatedItem) int {
 		key.WriteString(strconv.Itoa(v))
 		key.WriteByte('|')
 	}
-	for _, item := range itemsToPack.list {
+	for _, item := range itemsToPack.toSlice() {
 		for _, v := range []int{item.Width(), item.Length(), item.Depth(), item.Weight()} {
 			key.WriteString(strconv.Itoa(v))
 			key.WriteByte('|')
@@ -342,4 +342,18 @@ func exactFitDecider(dimensionALeft, dimensionBLeft int) int {
 		return 1
 	}
 	return 0
+}
+
+// allowedOrientation checks the current item's policy, never its predecessor's.
+func allowedOrientation(item Item, w, l, d int) bool {
+	if w == item.Width() && l == item.Length() && d == item.Depth() {
+		return true
+	}
+	if item.AllowedRotation() == RotationNever {
+		return false
+	}
+	if d == item.Depth() && w == item.Length() && l == item.Width() {
+		return true
+	}
+	return item.AllowedRotation() == RotationBestFit && sortedDims(w, l, d) == sortedDims(item.Width(), item.Length(), item.Depth())
 }

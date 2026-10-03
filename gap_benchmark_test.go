@@ -8,7 +8,7 @@ package boxpacker_test
 //
 // Methodology
 // -----------
-// True optimal 3D bin packing is NP-hard, so we bound the gap from two sides:
+// Optimal 3D bin packing is NP-hard, so we bound the gap from two sides:
 //
 //  1. Lower bound (LB) on the optimal box count: the max of a volume bound, a
 //     weight bound, and a max-items-per-box bound. No packing can use fewer
@@ -21,8 +21,9 @@ package boxpacker_test
 //     achievable - a partially filled final box only ever holds FEWER items
 //     than a validated pattern, which always fits. Therefore if ALT uses fewer
 //     boxes than greedy, that is a CONCRETE, PROVEN suboptimality of greedy.
-//     On small instances ALT runs an exact branch-and-bound and reports the
-//     true optimum; on large-quantity instances it runs a fast bulk greedy
+//     On small instances ALT exhaustively searches the generated pattern pool,
+//     which is not a complete enumeration of feasible geometric packings. On
+//     large-quantity instances it runs a fast bulk greedy
 //     set-cover, giving a valid feasible (upper-bound-on-optimal) solution.
 //
 // We report box count (primary objective) and total outer/shipping volume.
@@ -113,7 +114,7 @@ func benchCatalogs() []benchCatalog {
 			},
 		},
 		{
-			name: "small order, 5 SKUs low qty (exact optimum)",
+			name: "small order, 5 SKUs low qty",
 			boxes: []benchBox{
 				{"s", 220, 180, 120, 80, 214, 174, 114, 4000},
 				{"m", 320, 260, 180, 200, 312, 252, 172, 10000},
@@ -140,11 +141,10 @@ func benchCatalogs() []benchCatalog {
 			},
 		},
 
-		// --- exact "twins": same geometry as the structural catalogs above but
-		// small quantities, so branch-and-bound reports the TRUE optimum and we
-		// see whether greedy is structurally optimal on these shapes.
+		// Small twins of the catalogs above permit exhaustive pattern-pool search,
+		// without claiming complete geometric enumeration.
 		{
-			name: "[exact] apparel twin (6/5/3)",
+			name: "[small] apparel twin (6/5/3)",
 			boxes: []benchBox{
 				{"poly-small", 250, 200, 100, 60, 244, 194, 94, 5000},
 				{"carton-med", 400, 300, 250, 300, 388, 290, 240, 12000},
@@ -157,7 +157,7 @@ func benchCatalogs() []benchCatalog {
 			},
 		},
 		{
-			name: "[exact] cube twin (A/B/C x8)",
+			name: "[small] cube twin (A/B/C x8)",
 			boxes: []benchBox{
 				{"cube-s", 160, 160, 160, 120, 150, 150, 150, 8000},
 				{"cube-l", 320, 320, 320, 400, 310, 310, 310, 30000},
@@ -169,7 +169,7 @@ func benchCatalogs() []benchCatalog {
 			},
 		},
 		{
-			name: "[exact] awkward twin (x10 each)",
+			name: "[small] awkward twin (x10 each)",
 			boxes: []benchBox{
 				{"a", 300, 300, 300, 200, 290, 290, 290, 15000},
 				{"b", 400, 300, 300, 300, 388, 290, 290, 18000},
@@ -340,8 +340,22 @@ func generatePatterns(c benchCatalog, demand []int) []pattern {
 		orders := skuOrderings(c)
 		for _, order := range orders {
 			want := make([]int, len(c.skus))
+			b := c.boxes[bi]
+			volumeLeft, weightLeft := b.iw*b.il*b.id, b.maxw-b.ew
 			for _, si := range order {
-				want[si] = volCap(bi, si)
+				s := c.skus[si]
+				quantity := volCap(bi, si)
+				if q := volumeLeft / (s.w * s.l * s.d); q < quantity {
+					quantity = q
+				}
+				if s.weight > 0 {
+					if q := weightLeft / s.weight; q < quantity {
+						quantity = q
+					}
+				}
+				want[si] = quantity
+				volumeLeft -= quantity * s.w * s.l * s.d
+				weightLeft -= quantity * s.weight
 			}
 			add(bi, fitInto(c, boxes[bi], want))
 		}
@@ -374,9 +388,9 @@ func skuOrderings(c benchCatalog) [][]int {
 // ---- alternative solver: bulk greedy set-cover + small-instance B&B ------
 
 type altResult struct {
-	boxes    int
-	outerVol int
-	exact    bool // true if proven optimal (B&B exhausted) for this instance
+	boxes                 int
+	outerVol              int
+	patternSearchComplete bool // exhausted the restricted pattern search, not a proof of global optimality
 }
 
 func sub(demand, counts []int, k int) []int {
@@ -447,8 +461,9 @@ func bulkGreedyCover(c benchCatalog, pats []pattern, demand []int) (int, int) {
 	return boxes, outerVol
 }
 
-// branchAndBound finds the true minimum box count for small instances. Returns
-// (boxes, outerVol, exact). exact=false if the node budget was exhausted.
+// branchAndBound searches only the supplied patterns for small instances.
+// Completion proves a minimum count within this pool, not the global optimum.
+// The boolean is false if the node budget was exhausted.
 func branchAndBound(c benchCatalog, pats []pattern, demand []int, seedBoxes, seedVol int) (int, int, bool) {
 	bestBoxes, bestVol := seedBoxes, seedVol
 
@@ -459,9 +474,9 @@ func branchAndBound(c benchCatalog, pats []pattern, demand []int, seedBoxes, see
 	// Complete enumeration of pattern multisets via non-decreasing index order:
 	// recursing with start=pi (not pi+1) allows repeats, so every multiset is
 	// reached exactly once in its canonical ascending ordering. The ONLY pruning
-	// is the admissible lower bound, so termination with budget intact proves
-	// optimality. (A pattern that covers nothing still-needed is skipped - it can
-	// never appear in an optimal solution - which preserves completeness.)
+	// is the admissible lower bound, so completion proves the best box count
+	// within this restricted pattern pool. A pattern covering nothing still
+	// needed is skipped because it cannot improve a minimum-count solution.
 	contributes := func(rem []int, p pattern) bool {
 		for i, d := range rem {
 			if d > 0 && p.counts[i] > 0 {
@@ -544,24 +559,24 @@ func solveAlt(c benchCatalog, demand []int, packed []*boxpacker.PackedBox, greed
 	pats := append(generatePatterns(c, demand), greedyPatterns(c, packed)...)
 
 	// candidate 1: greedy itself
-	best := altResult{boxes: greedyBoxes, outerVol: greedyVol, exact: false}
+	best := altResult{boxes: greedyBoxes, outerVol: greedyVol, patternSearchComplete: false}
 
 	// candidate 2: bulk greedy set-cover over the full pool
 	if b, v := bulkGreedyCover(c, pats, demand); b < best.boxes || (b == best.boxes && v < best.outerVol) {
 		best.boxes, best.outerVol = b, v
 	}
 
-	// candidate 3: exact branch-and-bound for small instances
+	// candidate 3: exhaustive restricted-pattern search for small instances
 	total := 0
 	for _, d := range demand {
 		total += d
 	}
 	if total <= 80 {
-		b, v, exact := branchAndBound(c, pats, demand, best.boxes, best.outerVol)
+		b, v, complete := branchAndBound(c, pats, demand, best.boxes, best.outerVol)
 		if b < best.boxes || (b == best.boxes && v < best.outerVol) {
 			best.boxes, best.outerVol = b, v
 		}
-		best.exact = exact
+		best.patternSearchComplete = complete
 	}
 	return best
 }
@@ -611,16 +626,14 @@ func TestGreedyOptimalGap(t *testing.T) {
 
 		var note string
 		switch {
-		case alt.exact && greedyBoxes == alt.boxes:
-			note = "greedy = OPTIMUM (proven by B&B)"
-		case alt.exact && greedyBoxes > alt.boxes:
-			note = fmt.Sprintf("greedy is %d box(es) ABOVE optimum", greedyBoxes-alt.boxes)
 		case greedyBoxes == lb:
-			note = "greedy = OPTIMUM (matches LB)"
+			note = "greedy = OPTIMUM (matches independent LB)"
 		case alt.boxes < greedyBoxes:
-			note = fmt.Sprintf("ALT beat greedy by %d box(es)", greedyBoxes-alt.boxes)
+			note = fmt.Sprintf("ALT beat greedy by %d box(es); global optimum unknown", greedyBoxes-alt.boxes)
+		case alt.patternSearchComplete:
+			note = "restricted pattern search exhausted; global optimum unknown"
 		default:
-			note = "no better found (LB loose, not proven optimal)"
+			note = "no better found; global optimum unknown"
 		}
 
 		fmt.Printf("%-44s %8d %8d %8d %6.1f%%  %s\n",

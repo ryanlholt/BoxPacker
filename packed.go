@@ -76,7 +76,11 @@ func newPackedBox(box Box, items *packedItemList) *PackedBox {
 
 func (b *PackedBox) clone() *PackedBox {
 	items := make([]*PackedItem, len(b.Items))
-	copy(items, b.Items)
+	placements := make([]PackedItem, len(b.Items))
+	for i, item := range b.Items {
+		placements[i] = *item
+		items[i] = &placements[i]
+	}
 	return &PackedBox{Box: b.Box, Items: items, itemWeight: b.itemWeight, usedVolume: b.usedVolume}
 }
 

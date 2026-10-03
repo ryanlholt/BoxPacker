@@ -88,7 +88,7 @@ func (vp *volumePacker) evaluationTasks() []volumeEvaluationTask {
 
 	// Sometimes "space available" decisions depend on orientation of the box, so try both ways
 	rotationsToTest := []bool{false}
-	if !vp.packAcrossWidthOnly && !vp.hasNoRotationItems {
+	if !vp.packAcrossWidthOnly && !vp.hasNoRotationItems && vp.box.InnerWidth() != vp.box.InnerLength() {
 		rotationsToTest = append(rotationsToTest, true)
 	}
 
@@ -131,7 +131,7 @@ func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluat
 		return newPackedBox(vp.box, &packedItemList{})
 	}
 	tasks := vp.evaluationTasks()
-	workers := orientationEvaluationWorkers(maxConcurrency, vp.items.count(), len(tasks), vp.singlePassMode)
+	workers := orientationEvaluationWorkers(maxConcurrency, vp.estimatedWork(), len(tasks), vp.singlePassMode)
 	if vp.singlePassMode {
 		// Lookahead executes inside its parent's evaluation-worker lease and must
 		// not recursively acquire another slot.
@@ -161,6 +161,30 @@ func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluat
 		return remaining
 	}
 	return first
+}
+
+// Compact quantities make a large input pool cheap to traverse. Scheduling
+// should reflect run traversal plus possible placements, rather than raw order
+// quantity, or it widens pools whose work is now cheaper to execute serially.
+func (vp *volumePacker) estimatedWork() int {
+	placements := vp.items.count()
+	minimumVolume, minimumWeight := 0, 0
+	for i, run := range vp.items.runs {
+		volume, weight := itemVolume(run.item), run.item.Weight()
+		if i == 0 || volume < minimumVolume {
+			minimumVolume = volume
+		}
+		if i == 0 || weight < minimumWeight {
+			minimumWeight = weight
+		}
+	}
+	if minimumVolume > 0 {
+		placements = minInt(placements, boxInnerVolume(vp.box)/minimumVolume)
+	}
+	if minimumWeight > 0 {
+		placements = minInt(placements, (vp.box.MaxWeight()-vp.box.EmptyWeight())/minimumWeight)
+	}
+	return len(vp.items.runs) + maxInt(placements, 0)
 }
 
 func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, workers int, observer evaluationSchedulerObserver) *PackedBox {

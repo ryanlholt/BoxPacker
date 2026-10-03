@@ -97,10 +97,8 @@ func signatureOf(item Item) itemSignature {
 	}
 }
 
-// hasSortTiedSignature reports whether a physically different signature is
-// indistinguishable from target to compareItems. Stable sorting may interleave
-// such items, so seeing target at the head does not prove a whole prefix has
-// that signature.
+// hasSortTiedSignature reports physically different signatures that tie in
+// compareItems. Their interleaved stable order prevents count-only replication.
 func hasSortTiedSignature(target itemSignature, counts map[itemSignature]int) bool {
 	targetVolume := target.width * target.length * target.depth
 	for candidate := range counts {
@@ -116,103 +114,147 @@ func hasSortTiedSignature(target itemSignature, counts map[itemSignature]int) bo
 	return false
 }
 
-// itemList is a list of items to be packed, ordered largest-first.
+// itemRun retains identity and insertion order while storing repeated copies
+// without allocating one interface value per copy.
+type itemRun struct {
+	item     Item
+	quantity int
+}
+
+// itemList is ordered largest-first unless an internal caller supplies an
+// already ordered list. Clones own their runs; Item values remain immutable.
 type itemList struct {
-	list     []Item
+	runs     []itemRun
+	size     int
 	isSorted bool
 }
 
 func newItemListFromSlice(items []Item, preSorted bool) *itemList {
-	l := &itemList{list: make([]Item, len(items)), isSorted: preSorted}
-	copy(l.list, items)
+	l := &itemList{}
+	for _, item := range items {
+		l.insert(item, 1)
+	}
+	l.isSorted = preSorted
 	return l
 }
 
 func (l *itemList) insert(item Item, qty int) {
-	for i := 0; i < qty; i++ {
-		l.list = append(l.list, item)
+	if qty <= 0 {
+		return
 	}
+	l.appendRun(itemRun{item, qty})
 	l.isSorted = false
+}
+
+func (l *itemList) appendRun(run itemRun) {
+	if run.quantity <= 0 {
+		return
+	}
+	if n := len(l.runs); n > 0 && l.runs[n-1].item == run.item {
+		l.runs[n-1].quantity += run.quantity
+	} else {
+		l.runs = append(l.runs, run)
+	}
+	l.size += run.quantity
 }
 
 func (l *itemList) ensureSorted() {
 	if l.isSorted {
 		return
 	}
-	sort.SliceStable(l.list, func(i, j int) bool { return compareItems(l.list[i], l.list[j]) < 0 })
+	sort.SliceStable(l.runs, func(i, j int) bool { return compareItems(l.runs[i].item, l.runs[j].item) < 0 })
 	l.isSorted = true
 }
 
-func (l *itemList) count() int {
-	return len(l.list)
-}
+func (l *itemList) count() int { return l.size }
 
 func (l *itemList) clone() *itemList {
-	c := &itemList{list: make([]Item, len(l.list)), isSorted: l.isSorted}
-	copy(c.list, l.list)
-	return c
+	return &itemList{runs: append([]itemRun(nil), l.runs...), size: l.size, isSorted: l.isSorted}
 }
 
-// extract removes and returns the largest remaining item.
 func (l *itemList) extract() Item {
-	l.ensureSorted()
-	item := l.list[0]
-	l.list = l.list[1:]
+	item := l.top()
+	l.removeFirstN(1)
 	return item
 }
 
-// top returns the largest remaining item without removing it.
 func (l *itemList) top() Item {
 	l.ensureSorted()
-	return l.list[0]
+	return l.runs[0].item
 }
 
-// topN returns a new list containing the n largest remaining items.
 func (l *itemList) topN(n int) *itemList {
 	l.ensureSorted()
-	if n > len(l.list) {
-		n = len(l.list)
+	out := &itemList{isSorted: true}
+	for _, run := range l.runs {
+		if n <= 0 {
+			break
+		}
+		run.quantity = minInt(run.quantity, n)
+		out.appendRun(run)
+		n -= run.quantity
 	}
-	return newItemListFromSlice(l.list[:n], true)
-}
-
-// toSlice returns a sorted copy of the remaining items.
-func (l *itemList) toSlice() []Item {
-	l.ensureSorted()
-	out := make([]Item, len(l.list))
-	copy(out, l.list)
 	return out
 }
 
-// replace swaps the list contents for the given items.
-func (l *itemList) replace(items []Item, preSorted bool) {
-	l.list = make([]Item, len(items))
-	copy(l.list, items)
-	l.isSorted = preSorted
+// toSlice expands quantities only at an API boundary or for bounded lookahead.
+func (l *itemList) toSlice() []Item {
+	l.ensureSorted()
+	out := make([]Item, 0, l.size)
+	for _, run := range l.runs {
+		for range run.quantity {
+			out = append(out, run.item)
+		}
+	}
+	return out
 }
 
-// removePackedItems removes the given packed items (by identity) from the list.
+// restore consumes a skipped list without expanding its quantities. Callers
+// must have exhausted the current list, preserving the original sorted order.
+func (l *itemList) restore(skipped *itemList) {
+	*l = *skipped
+	l.isSorted = true
+	*skipped = itemList{}
+}
+
+// removePackedItems removes exact identities in one stable pass.
 func (l *itemList) removePackedItems(packed []*PackedItem) {
-	l.ensureSorted()
+	counts := make(map[Item]int, len(packed))
 	for _, pi := range packed {
-		for i, item := range l.list {
-			if item == pi.Item {
-				l.list = append(l.list[:i], l.list[i+1:]...)
-				break
-			}
+		counts[pi.Item]++
+	}
+	l.ensureSorted()
+	out := l.runs[:0]
+	for _, run := range l.runs {
+		removed := minInt(run.quantity, counts[run.item])
+		counts[run.item] -= removed
+		run.quantity -= removed
+		l.size -= removed
+		if run.quantity > 0 {
+			out = append(out, run)
+		}
+	}
+	clear(l.runs[len(out):])
+	l.runs = out
+}
+
+func (l *itemList) removeFirstN(n int) {
+	l.ensureSorted()
+	for n > 0 {
+		removed := minInt(n, l.runs[0].quantity)
+		l.runs[0].quantity -= removed
+		l.size -= removed
+		n -= removed
+		if l.runs[0].quantity == 0 {
+			l.runs[0] = itemRun{}
+			l.runs = l.runs[1:]
 		}
 	}
 }
 
-// removeFirstN drops the n largest remaining items.
-func (l *itemList) removeFirstN(n int) {
-	l.ensureSorted()
-	l.list = l.list[n:]
-}
-
 func (l *itemList) hasNoRotationItems() bool {
-	for _, item := range l.list {
-		if item.AllowedRotation() == RotationNever {
+	for _, run := range l.runs {
+		if run.item.AllowedRotation() == RotationNever {
 			return true
 		}
 	}
@@ -221,60 +263,83 @@ func (l *itemList) hasNoRotationItems() bool {
 
 func (l *itemList) totalVolume() int {
 	volume := 0
-	for _, item := range l.list {
-		volume += itemVolume(item)
+	for _, run := range l.runs {
+		volume += itemVolume(run.item) * run.quantity
 	}
 	return volume
 }
 
-// signatureCounts returns how many items of each distinct signature the list
-// holds.
 func (l *itemList) signatureCounts() map[itemSignature]int {
 	counts := make(map[itemSignature]int)
-	for _, item := range l.list {
-		counts[signatureOf(item)]++
+	for _, run := range l.runs {
+		counts[signatureOf(run.item)] += run.quantity
 	}
 	return counts
 }
 
-// cappedBySignature returns a new list keeping at most caps[sig] items of each
-// signature, preserving sort order. Signatures absent from caps are dropped.
 func (l *itemList) cappedBySignature(caps map[itemSignature]int) *itemList {
 	l.ensureSorted()
-	out := make([]Item, 0, len(l.list))
+	out := &itemList{isSorted: true}
 	used := make(map[itemSignature]int, len(caps))
-	for _, item := range l.list {
-		sig := signatureOf(item)
-		if used[sig] < caps[sig] {
-			used[sig]++
-			out = append(out, item)
+	for _, run := range l.runs {
+		sig := signatureOf(run.item)
+		run.quantity = minInt(run.quantity, caps[sig]-used[sig])
+		if run.quantity > 0 {
+			used[sig] += run.quantity
+			out.appendRun(run)
 		}
 	}
-	return &itemList{list: out, isSorted: true}
+	return out
 }
 
-// removeSignatureMultiset removes toRemove[sig] items of each signature. Items
-// of the same signature are interchangeable, so any matching copies are removed
-// and the remaining list stays sorted.
-func (l *itemList) removeSignatureMultiset(toRemove map[itemSignature]int) {
-	if len(toRemove) == 0 {
-		return
-	}
+// takeSignatureMultiset consumes matching identities in stable order. The
+// returned compact queues let replicas bind their layout to actual input items.
+func (l *itemList) takeSignatureMultiset(toRemove map[itemSignature]int) map[itemSignature]*itemList {
 	l.ensureSorted()
+	taken := make(map[itemSignature]*itemList, len(toRemove))
 	remaining := make(map[itemSignature]int, len(toRemove))
 	for sig, n := range toRemove {
 		remaining[sig] = n
 	}
-	out := l.list[:0]
-	for _, item := range l.list {
-		sig := signatureOf(item)
-		if remaining[sig] > 0 {
-			remaining[sig]--
-			continue
+	out := l.runs[:0]
+	for _, run := range l.runs {
+		sig := signatureOf(run.item)
+		removed := minInt(run.quantity, remaining[sig])
+		if removed > 0 {
+			if taken[sig] == nil {
+				taken[sig] = &itemList{isSorted: true}
+			}
+			taken[sig].appendRun(itemRun{run.item, removed})
+			remaining[sig] -= removed
+			run.quantity -= removed
+			l.size -= removed
 		}
-		out = append(out, item)
+		if run.quantity > 0 {
+			out = append(out, run)
+		}
 	}
-	l.list = out
+	clear(l.runs[len(out):])
+	l.runs = out
+	return taken
+}
+
+// samePackingDimensions permits skipping only items with the same set of
+// allowed orientations, including the original axis order for fixed items.
+func samePackingDimensions(a, b Item) bool {
+	if a == b {
+		return true
+	}
+	if a.AllowedRotation() != b.AllowedRotation() {
+		return false
+	}
+	switch a.AllowedRotation() {
+	case RotationBestFit:
+		return isSameDimensions(a, b)
+	case RotationKeepFlat:
+		return a.Depth() == b.Depth() && sortedDims(a.Width(), a.Length(), 0) == sortedDims(b.Width(), b.Length(), 0)
+	default:
+		return a.Width() == b.Width() && a.Length() == b.Length() && a.Depth() == b.Depth()
+	}
 }
 
 // isSameDimensions reports whether two items have the same dimensions in any
