@@ -22,6 +22,22 @@ func assertPackedBoxValid(t *testing.T, pb *PackedBox) {
 	}
 
 	for i, item := range pb.Items {
+		// Deliberately independent of the engine's orientation helper.
+		original := item.Item
+		validRotation := item.Width == original.Width() && item.Length == original.Length() && item.Depth == original.Depth()
+		if original.AllowedRotation() != RotationNever {
+			validRotation = validRotation || (item.Width == original.Length() && item.Length == original.Width() && item.Depth == original.Depth())
+		}
+		if original.AllowedRotation() == RotationBestFit {
+			got := []int{item.Width, item.Length, item.Depth}
+			want := []int{original.Width(), original.Length(), original.Depth()}
+			sort.Ints(got)
+			sort.Ints(want)
+			validRotation = slices.Equal(got, want)
+		}
+		if !validRotation {
+			t.Errorf("item %d (%q) violates rotation policy %s", i, original.Description(), original.AllowedRotation())
+		}
 		if item.X < 0 || item.X+item.Width > pb.Box.InnerWidth() {
 			t.Errorf("item %d (%q) out of bounds on x: %d+%d vs width %d", i, item.Item.Description(), item.X, item.Width, pb.Box.InnerWidth())
 		}

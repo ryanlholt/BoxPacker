@@ -31,6 +31,9 @@ type Packer struct {
 	boxSorter               PackedBoxSorter
 	boxEvaluationObserver   func(Box)
 	maxConcurrency          int
+	packingSearchBudget     int
+	packingSearchObserver   func()
+	boxesSorted             bool
 	schedulerObserver       evaluationSchedulerObserver
 }
 
@@ -69,6 +72,7 @@ func (p *Packer) AddItem(item Item, qty int) {
 // implements LimitedSupplyBox, only its available quantity will be used.
 func (p *Packer) AddBox(box Box) {
 	p.boxes = append(p.boxes, box)
+	p.boxesSorted = false
 	if limited, ok := box.(LimitedSupplyBox); ok {
 		p.boxQuantities[box] = limited.QuantityAvailable()
 	} else {
@@ -131,7 +135,21 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
+	var searchItems *itemList
+	var searchSupply map[Box]int
+	if p.packingSearchBudget > 0 && p.items.count() <= maximumPackingSearchItems {
+		if _, builtin := p.boxSorter.(defaultPackedBoxSorter); builtin {
+			searchItems = p.items.clone()
+			searchSupply = make(map[Box]int, len(p.boxQuantities))
+			for box, quantity := range p.boxQuantities {
+				searchSupply[box] = quantity
+			}
+		}
+	}
 	packedBoxes, err := p.packBasic(false)
+	if err == nil && p.items.count() == 0 && searchItems != nil && len(packedBoxes) > 1 {
+		packedBoxes = p.searchPacking(searchItems, searchSupply, packedBoxes)
+	}
 	if err == nil && len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
 		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities, p.maxConcurrency)
 		packedBoxes = redistributor.redistributeWeight(packedBoxes)
@@ -166,7 +184,10 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 		// serial volume packers so scheduler pools are never nested.
 		candidates := p.candidateBoxes(enforceSingleBox)
 		p.items.ensureSorted() // so the per-candidate clones don't each re-sort
-		signatureCounts := p.items.signatureCounts()
+		var signatureCounts map[itemSignature]int
+		if p.quantityShortCircuit {
+			signatureCounts = p.items.signatureCounts()
+		}
 		packers := make([]*volumePacker, len(candidates))
 		for i, box := range candidates {
 			packers[i] = newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
@@ -225,7 +246,7 @@ func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
 
 	estimatedWork := 0
 	for _, packer := range packers {
-		estimatedWork += packer.items.count()
+		estimatedWork += packer.estimatedWork()
 	}
 	desiredWorkers := candidateEvaluationWorkers(p.maxConcurrency, len(packers), estimatedWork)
 	workers := sharedEvaluationWorkers.acquire(desiredWorkers)
@@ -300,6 +321,13 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 		boxCounts[signatureOf(item.Item)]++
 	}
 	poolCounts := p.items.signatureCounts()
+	// Stable sorter ties between physically different signatures can interleave
+	// their runs. Counts alone cannot prove that replica inputs stay unchanged.
+	for sig := range boxCounts {
+		if hasSortTiedSignature(sig, poolCounts) {
+			return nil
+		}
+	}
 	replications := p.boxQuantities[template.Box]
 
 	// Candidate boxes are partitioned before each iteration: boxes large enough
@@ -360,27 +388,20 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 		return nil
 	}
 
+	toRemove := make(map[itemSignature]int, len(boxCounts))
+	for sig, need := range boxCounts {
+		toRemove[sig] = need * replications
+	}
+	taken := p.items.takeSignatureMultiset(toRemove)
 	clones := make([]*PackedBox, replications)
 	for i := range clones {
 		clones[i] = template.clone()
+		for _, placement := range clones[i].Items {
+			sig := signatureOf(placement.Item)
+			placement.Item = taken[sig].extract()
+		}
 	}
 	p.boxQuantities[template.Box] -= replications
-
-	// Remove replications copies of the box makeup from the pool. When the box
-	// holds a single item type that leads the sorted pool, those items are the
-	// sorted prefix and can be dropped cheaply; otherwise fall back to a
-	// signature-aware removal.
-	if sig, uniform := uniformPackedSignature(template.Items); uniform &&
-		signatureOf(p.items.top()) == sig &&
-		!hasSortTiedSignature(sig, poolCounts) {
-		p.items.removeFirstN(perBox * replications)
-	} else {
-		toRemove := make(map[itemSignature]int, len(boxCounts))
-		for sig, need := range boxCounts {
-			toRemove[sig] = need * replications
-		}
-		p.items.removeSignatureMultiset(toRemove)
-	}
 	return clones
 }
 
@@ -428,9 +449,11 @@ func perBoxCapacity(box Box, sig itemSignature) int {
 // into: smallest first, but boxes that cannot possibly hold the entire
 // remaining set of items by volume are evaluated last.
 func (p *Packer) candidateBoxes(enforceSingleBox bool) []Box {
-	sorted := make([]Box, len(p.boxes))
-	copy(sorted, p.boxes)
-	sort.SliceStable(sorted, func(i, j int) bool { return compareBoxes(sorted[i], sorted[j]) < 0 })
+	if !p.boxesSorted {
+		sort.SliceStable(p.boxes, func(i, j int) bool { return compareBoxes(p.boxes[i], p.boxes[j]) < 0 })
+		p.boxesSorted = true
+	}
+	sorted := p.boxes
 
 	remainingVolume := p.items.totalVolume()
 
@@ -446,17 +469,4 @@ func (p *Packer) candidateBoxes(enforceSingleBox bool) []Box {
 		}
 	}
 	return append(preferred, other...)
-}
-
-func uniformPackedSignature(items []*PackedItem) (itemSignature, bool) {
-	if len(items) == 0 {
-		return itemSignature{}, false
-	}
-	signature := signatureOf(items[0].Item)
-	for _, item := range items[1:] {
-		if signatureOf(item.Item) != signature {
-			return itemSignature{}, false
-		}
-	}
-	return signature, true
 }

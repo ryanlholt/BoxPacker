@@ -12,11 +12,13 @@ branch of the PHP fork for the features shared by both implementations.
 
 - Items are packed largest-first into horizontal layers, in rows, with
   smaller items stacked into the gaps above and beside larger ones.
-- All allowed rotations of each item are considered, preferring exact fits,
+- Orientation heuristics respect allowed rotations and prefer exact fits,
   orientations that leave room for upcoming items (with a bounded lookahead),
-  and stable, low centre-of-gravity placements.
+  and stable, low centre-of-gravity placements. Identical shapes may reuse the
+  preceding orientation.
 - Box weight limits are enforced during placement, not after.
-- Layers are re-ordered bottom-heavy for load stability.
+- Layers are re-ordered by footprint and depth to encourage stability. This
+  heuristic does not enforce load-bearing strength or full support beneath items.
 - When multiple box types are available, every type is evaluated through a
   bounded adaptive worker pool, and the box that packs the most items (then
   best volume utilisation) wins. Smaller boxes are preferred when they can
@@ -25,14 +27,14 @@ branch of the PHP fork for the features shared by both implementations.
 
 ## Large quantities
 
-Naively, packing N items costs N/boxCapacity full packing solves —
-quadratic-ish behaviour that gets unreasonable at e-commerce quantities. This
-port short-circuits that with two cooperating optimisations:
+Without the short-circuit, packing N items can require N/boxCapacity repeated
+packing solves. This becomes costly at e-commerce quantities. This port reduces
+that work with two cooperating optimisations:
 
 - **Per-type work-bounding.** Each box evaluation is capped to physical
-  capacity by volume and weight plus the orientation lookahead window, so the
-  size of the order doesn't affect the cost of solving one box — even when the
-  order mixes many distinct item types.
+  capacity by volume and weight plus the orientation lookahead window. For a
+  fixed catalog of signatures, geometry evaluations stay bounded as quantities
+  grow. Preparing those inputs still depends on the number of identity entries.
 - **Box replication.** With the built-in sorter, a solved box's exact item
   makeup can be **replicated** for subsequent boxes while the safety guards
   hold. This works for a winning box made up of a *mix* of item types, not just
@@ -49,6 +51,37 @@ The short-circuit is disabled by default. Enable it explicitly for large
 orders with `packer.SetQuantityShortCircuit(true)`. The included large-quantity
 benchmarks and tests cover both uniform and mixed-SKU workloads and assert a
 quantity-independent number of real packing evaluations.
+
+Repeated copies supplied through `AddItem(item, quantity)` are stored internally
+as compact quantity entries, including in skipped-item queues and packing
+clones. Distinct input objects retain their identities. Replicated boxes own
+independent placement records and bind each placement to an actual remaining
+input item. Returned layouts and `UnpackedItems()` still contain one entry per
+physical item, so their output size necessarily grows with quantity.
+
+Replication is also disabled when physically different signatures tie in the
+item sorter: counts alone cannot prove that their interleaved input order stays
+unchanged. Process-wide orientation caches use FIFO eviction and retain at most
+1,024 stability entries and 4,096 lookahead entries.
+
+## Optional packing search
+
+For small orders where reducing parcel count matters more than solve time, use
+`packer.SetPackingSearchBudget(64)`. After the initial greedy pass, it evaluates
+additional item subsets and searches combinations of their validated layouts,
+keeping a result only if it uses fewer boxes, or the same count with less total
+outer volume. For example, widths `6, 5, 3, 2, 2, 2` in `10×1×1` boxes need three
+boxes under the default heuristic, but this option finds the two-box arrangement
+`[6,2,2]` and `[5,3,2]`.
+
+The setting limits additional single-box solves. Subset screening and coverage
+search are each capped at `64 * min(budget, 4096)` steps, and orders are limited
+to 16 items. The search respects limited supply and preserves item identities.
+It is disabled by default and skipped for larger orders, partial results, and
+custom box sorters. This is a bounded improvement search, not a guarantee of
+global optimality. Weight redistribution runs afterward; disable it with
+`SetMaxBoxesToBalanceWeight(0)` if preserving the search's volume objective is
+more important than balancing parcel weights.
 
 ## Weight redistribution
 
@@ -123,6 +156,7 @@ types: identity is used to track items through packing.
 |------|--------|
 | `packer.AllowPartialResults(true)` | Don't error on unpackable items; retrieve leftovers via `packer.UnpackedItems()` |
 | `packer.SetQuantityShortCircuit(true)` | Enable lookahead-safe work bounding and, with the built-in sorter, guarded box replication for large quantities |
+| `packer.SetPackingSearchBudget(n)` | Opt into bounded packing improvement for complete orders of at most 16 items with the default sorter; `0` disables |
 | `packer.SetMaxConcurrency(n)` | Bound independent box/orientation evaluation: `0` adapts to runtime capacity and workload, `1` is serial, and `n > 1` is a per-packer ceiling |
 | `packer.SetMaxBoxesToBalanceWeight(n)` | Rebalance results containing at most `n` boxes by weight; use `0` to disable |
 | `packer.AddBox(boxpacker.NewLimitedSupplyBox(...))` / `packer.SetBoxQuantity(box, n)` | Limit how many of a box type are available |
@@ -209,7 +243,11 @@ fractions.
 
 ## Differences from the PHP library
 
-- Adds the opt-in large-quantity short-circuit described above.
+- Adds compact quantity storage, identity-preserving replication, and the opt-in
+  large-quantity short-circuit described above.
+- Adds an optional bounded small-order packing search.
+- Enforces the current item’s rotation policy when reusing a previous orientation
+  or skipping equal-sized items, including mixed-policy orders.
 - Includes PHP-compatible post-packing weight redistribution for results of up
   to 12 boxes by default.
 - Supports a custom `PackedBoxSorter` (like the PHP library), plus

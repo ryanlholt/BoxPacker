@@ -112,13 +112,16 @@ func (lp *layerPacker) packLayer(
 	x, y, z := startX, startY, startZ
 	rowLength := 0
 	var prevItem *orientatedItem
-	var skippedItems []Item
+	skippedItems := &itemList{}
 
 	for items.count() > 0 {
 		itemToPack := items.extract()
 
 		// skip items that will never fit e.g. too heavy
 		if itemToPack.Weight() > lp.box.MaxWeight()-lp.box.EmptyWeight()-packedItemList.weight {
+			if items.count() > 0 && items.top() == itemToPack {
+				items.removeFirstN(items.runs[0].quantity)
+			}
 			continue
 		}
 
@@ -155,19 +158,21 @@ func (lp *layerPacker) packLayer(
 			// might be space available lengthwise across the width of this item, up to the current layer length
 			layer.merge(lp.packLayer(items, packedItemList, x-packed.Width, y+packed.Length, z, x, y+rowLength, depthForLayer, layer.depth(), considerStability, nil))
 
-			if items.count() == 0 && len(skippedItems) > 0 {
-				items.replace(skippedItems, true)
-				skippedItems = nil
+			if items.count() == 0 && skippedItems.count() > 0 {
+				items.restore(skippedItems)
 			}
 			continue
 		}
 
 		if items.count() > 0 { // skip for now, move on to the next item
-			skippedItems = append(skippedItems, itemToPack)
+			skippedItems.insert(itemToPack, 1)
 			// abandon here if next item is the same, no point trying to keep going.
 			// Last one is not skipped, need that to trigger appropriate reset logic.
-			for items.count() > 1 && isSameDimensions(itemToPack, items.top()) {
-				skippedItems = append(skippedItems, items.extract())
+			for items.count() > 1 && samePackingDimensions(itemToPack, items.top()) {
+				run := items.runs[0]
+				run.quantity = minInt(run.quantity, items.count()-1)
+				skippedItems.insert(run.item, run.quantity)
+				items.removeFirstN(run.quantity)
 			}
 			continue
 		}
@@ -176,16 +181,15 @@ func (lp *layerPacker) packLayer(
 			y += rowLength
 			x = startX
 			rowLength = 0
-			skippedItems = append(skippedItems, itemToPack)
-			items.replace(append(skippedItems, items.toSlice()...), true)
-			skippedItems = nil
+			skippedItems.insert(itemToPack, 1)
+			items.restore(skippedItems)
 			prevItem = nil
 			continue
 		}
 
 		// no items fit at all, the next vertical layer is the caller's responsibility
-		skippedItems = append(skippedItems, itemToPack)
-		items.replace(append(skippedItems, items.toSlice()...), true)
+		skippedItems.insert(itemToPack, 1)
+		items.restore(skippedItems)
 		return layer
 	}
 
