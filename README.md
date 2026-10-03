@@ -241,6 +241,20 @@ Millimetres and grams are recommended (matching the PHP library); avoid
 centimetres/inches if you need sub-unit precision, since there are no
 fractions.
 
+## Testing
+
+```sh
+go vet ./...
+go test -race -count=1 ./...
+```
+
+GitHub Actions runs formatting checks, vet, and the full test suite with race
+detection and coverage on pull requests and pushes to `main`. The workflow
+uses the Go version declared in `go.mod` and reports total coverage in its logs.
+The suite includes the rotation, replication, geometry, finite-supply, search,
+and scheduler regressions. PHP parity tests read committed golden fixtures;
+they do not require a PHP installation.
+
 ## Differences from the PHP library
 
 - Adds compact quantity storage, identity-preserving replication, and the opt-in
