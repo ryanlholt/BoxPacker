@@ -1,6 +1,7 @@
 package boxpacker
 
 import (
+	"context"
 	"math/bits"
 	"sort"
 )
@@ -85,6 +86,9 @@ func (p *Packer) searchPacking(original *itemList, supply map[Box]int, incumbent
 	screened := 0
 searchGeneration:
 	for _, mask := range masks {
+		if contextError(p.ctx) != nil {
+			return incumbent
+		}
 		selected := make([]Item, 0, bits.OnesCount32(mask))
 		volume, weight := 0, 0
 		for i, item := range items {
@@ -108,7 +112,15 @@ searchGeneration:
 			}
 			vp := NewVolumePacker(box, selected)
 			vp.SetMaxConcurrency(p.maxConcurrency)
-			add(vp.Pack(), mask)
+			ctx := p.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			result, err := vp.PackContext(ctx)
+			if err != nil {
+				return incumbent
+			}
+			add(result, mask)
 		}
 	}
 	sort.SliceStable(patterns, func(i, j int) bool {
@@ -132,7 +144,7 @@ searchGeneration:
 	nodes := 0
 	var visit func(uint32, int)
 	visit = func(covered uint32, volume int) {
-		if nodes >= nodeLimit {
+		if contextError(p.ctx) != nil || nodes >= nodeLimit {
 			return
 		}
 		nodes++
@@ -163,6 +175,9 @@ searchGeneration:
 		}
 	}
 	visit(0, 0)
+	if contextError(p.ctx) != nil {
+		return incumbent
+	}
 	// Supply changes are committed only for a complete winning solution.
 	for _, box := range incumbent {
 		p.boxQuantities[box.Box]++

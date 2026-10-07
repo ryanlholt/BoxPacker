@@ -1,6 +1,7 @@
 package boxpacker
 
 import (
+	"context"
 	"math"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ var emptyBoxStableCache = newBoundedCache(1024)
 // orientatedItemFactory works out which orientations an item can be placed in
 // within a given box, and which of those is best for a given context.
 type orientatedItemFactory struct {
+	ctx            context.Context
 	box            Box
 	singlePassMode bool
 }
@@ -57,6 +59,9 @@ func (f *orientatedItemFactory) getBestOrientation(
 	prevPackedItemList *packedItemList,
 	considerStability bool,
 ) *orientatedItem {
+	if contextError(f.ctx) != nil {
+		return nil
+	}
 	possibleOrientations := f.getPossibleOrientations(item, prevItem, widthLeft, lengthLeft, depthLeft)
 
 	usableOrientations := possibleOrientations
@@ -287,7 +292,7 @@ func (s *orientatedItemSorter) lookAheadDecider(a, b *orientatedItem, aWidthLeft
 // still be packed alongside/after the given orientation. Not an actual
 // packing - this focuses purely on fit.
 func (s *orientatedItemSorter) additionalItemsPacked(prev *orientatedItem) int {
-	if s.singlePassMode {
+	if s.singlePassMode || contextError(s.factory.ctx) != nil {
 		return 0
 	}
 
@@ -317,19 +322,22 @@ func (s *orientatedItemSorter) additionalItemsPacked(prev *orientatedItem) int {
 
 	// remainder of the current row
 	rowVolume := &workingVolume{width: s.widthLeft - prev.width, length: currentRowLength, depth: s.depthLeft}
-	rowPacker := newVolumePacker(rowVolume, itemsToPack)
+	rowPacker := newVolumePackerWithContext(s.factory.ctx, rowVolume, itemsToPack)
 	rowPacker.setSinglePassMode(true)
 	rowPacked := rowPacker.pack()
 	itemsToPack.removePackedItems(rowPacked.Items)
 
 	// then the rest of the layer
 	nextRowsVolume := &workingVolume{width: s.widthLeft, length: s.lengthLeft - currentRowLength, depth: s.depthLeft}
-	nextRowsPacker := newVolumePacker(nextRowsVolume, itemsToPack)
+	nextRowsPacker := newVolumePackerWithContext(s.factory.ctx, nextRowsVolume, itemsToPack)
 	nextRowsPacker.setSinglePassMode(true)
 	nextRowsPacked := nextRowsPacker.pack()
 	itemsToPack.removePackedItems(nextRowsPacked.Items)
 
 	packedCount := originalCount - itemsToPack.count()
+	if contextError(s.factory.ctx) != nil {
+		return 0
+	}
 	lookaheadCache.Store(cacheKey, packedCount)
 	return packedCount
 }

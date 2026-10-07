@@ -1,12 +1,16 @@
 package boxpacker
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 // weightRedistributor mirrors the PHP 3.x post-pack pass. It considers pairs
 // of boxes from heaviest to lightest and moves items only when doing so lowers
 // item-weight variance and both resulting item sets can still be packed into a
 // single available box.
 type weightRedistributor struct {
+	ctx            context.Context
 	boxes          []Box
 	boxSorter      PackedBoxSorter
 	boxQuantities  map[Box]int
@@ -35,9 +39,15 @@ func (r *weightRedistributor) redistributeWeight(original []*PackedBox) []*Packe
 	sort.SliceStable(boxes, func(i, j int) bool { return boxes[i].Weight() > boxes[j].Weight() })
 
 	for {
+		if contextError(r.ctx) != nil {
+			return boxes
+		}
 		iterationSuccessful := false
 		for a := 0; a < len(boxes) && !iterationSuccessful; a++ {
 			for b := a + 1; b < len(boxes); b++ {
+				if contextError(r.ctx) != nil {
+					return boxes
+				}
 				if boxes[a].Weight() == boxes[b].Weight() {
 					continue
 				}
@@ -75,6 +85,9 @@ func (r *weightRedistributor) equaliseWeight(boxA, boxB *PackedBox, targetWeight
 	anyIterationSuccessful := false
 
 	for key := 0; key < len(overWeightItems); {
+		if contextError(r.ctx) != nil {
+			return boxA, boxB, anyIterationSuccessful
+		}
 		overWeightItem := overWeightItems[key]
 		if !wouldRepackActuallyHelp(overWeightItems, overWeightItem, underWeightItems, targetWeight) {
 			key++
@@ -140,7 +153,11 @@ func (r *weightRedistributor) equaliseWeight(boxA, boxB *PackedBox, targetWeight
 }
 
 func (r *weightRedistributor) doVolumeRepack(items []Item, currentBox Box) []*PackedBox {
+	if contextError(r.ctx) != nil {
+		return nil
+	}
 	packer := NewPacker()
+	packer.ctx = r.ctx
 	packer.SetMaxConcurrency(r.maxConcurrency)
 	packer.boxes = append([]Box(nil), r.boxes...)
 	packer.boxQuantities = make(map[Box]int, len(r.boxQuantities))
@@ -152,11 +169,17 @@ func (r *weightRedistributor) doVolumeRepack(items []Item, currentBox Box) []*Pa
 	packer.boxQuantities[currentBox]++
 	packer.items = newItemListFromSlice(items, false)
 
-	packed, _ := packer.packBasic(true)
+	packed, err := packer.packBasic(true)
+	if err != nil {
+		return nil
+	}
 	return packed
 }
 
 func (r *weightRedistributor) applyBoxQuantityChanges(changes map[Box]int) bool {
+	if contextError(r.ctx) != nil {
+		return false
+	}
 	for box, change := range changes {
 		if r.boxQuantities[box]+change < 0 {
 			return false

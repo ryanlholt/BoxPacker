@@ -1,6 +1,7 @@
 package boxpacker
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -22,6 +23,7 @@ func (e *NoBoxesAvailableError) Error() string {
 // Packer packs items into boxes, choosing box sizes using built-in heuristics
 // for the best overall solution.
 type Packer struct {
+	ctx                     context.Context
 	items                   *itemList
 	boxes                   []Box
 	boxQuantities           map[Box]int
@@ -135,6 +137,24 @@ func (p *Packer) UnpackedItems() []Item {
 
 // Pack packs the items into boxes and returns the packed boxes.
 func (p *Packer) Pack() ([]*PackedBox, error) {
+	return p.PackContext(context.Background())
+}
+
+// PackContext packs with cooperative cancellation. Cancellation returns ctx.Err()
+// even when partial results are allowed. Only completed greedy boxes are committed;
+// an interrupted candidate is never accepted. Packer is not safe for concurrent use.
+// Custom Item, Box and sorter methods must return promptly; their calls cannot be
+// forcibly interrupted by a context.
+func (p *Packer) PackContext(ctx context.Context) ([]*PackedBox, error) {
+	if ctx == nil {
+		panic("boxpacker: nil context")
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	previous := p.ctx
+	p.ctx = ctx
+	defer func() { p.ctx = previous }()
 	var searchItems *itemList
 	var searchSupply map[Box]int
 	if p.packingSearchBudget > 0 && p.items.count() <= maximumPackingSearchItems {
@@ -150,9 +170,13 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 	if err == nil && p.items.count() == 0 && searchItems != nil && len(packedBoxes) > 1 {
 		packedBoxes = p.searchPacking(searchItems, searchSupply, packedBoxes)
 	}
-	if err == nil && len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
+	if err == nil && contextError(ctx) == nil && len(packedBoxes) > 1 && len(packedBoxes) <= p.maxBoxesToBalanceWeight {
 		redistributor := newWeightRedistributor(p.boxes, p.boxSorter, p.boxQuantities, p.maxConcurrency)
+		redistributor.ctx = ctx
 		packedBoxes = redistributor.redistributeWeight(packedBoxes)
+	}
+	if cancelErr := contextError(ctx); cancelErr != nil {
+		return packedBoxes, cancelErr
 	}
 	// PHP exposes a PackedBoxList that sorts lazily on iteration. Go returns a
 	// slice, so apply the active sorter before returning every result, including
@@ -161,6 +185,9 @@ func (p *Packer) Pack() ([]*PackedBox, error) {
 	sort.SliceStable(packedBoxes, func(i, j int) bool {
 		return p.boxSorter.Compare(packedBoxes[i], packedBoxes[j]) < 0
 	})
+	if cancelErr := contextError(ctx); cancelErr != nil {
+		return packedBoxes, cancelErr
+	}
 	return packedBoxes, err
 }
 
@@ -178,6 +205,9 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 
 	// Keep going until everything is packed
 	for p.items.count() > 0 {
+		if err := contextError(p.ctx); err != nil {
+			return packedBoxes, err
+		}
 		// Evaluate independent candidates within one shared concurrency budget.
 		// With a single candidate, spare capacity may instead be used for that
 		// box's first-orientation alternatives. Multiple candidates always use
@@ -190,9 +220,15 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 		}
 		packers := make([]*volumePacker, len(candidates))
 		for i, box := range candidates {
-			packers[i] = newVolumePacker(box, p.itemsForBoxEvaluation(box, signatureCounts))
+			if err := contextError(p.ctx); err != nil {
+				return packedBoxes, err
+			}
+			packers[i] = newVolumePackerWithContext(p.ctx, box, p.itemsForBoxEvaluation(box, signatureCounts))
 		}
 		results := p.evaluateCandidates(packers)
+		if err := contextError(p.ctx); err != nil {
+			return packedBoxes, err
+		}
 
 		var iteration []*PackedBox
 		for _, packedBox := range results {
@@ -221,7 +257,7 @@ func (p *Packer) packBasic(enforceSingleBox bool) ([]*PackedBox, error) {
 		}
 	}
 
-	return packedBoxes, nil
+	return packedBoxes, contextError(p.ctx)
 }
 
 func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
@@ -249,10 +285,16 @@ func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
 		estimatedWork += packer.estimatedWork()
 	}
 	desiredWorkers := candidateEvaluationWorkers(p.maxConcurrency, len(packers), estimatedWork)
-	workers := sharedEvaluationWorkers.acquire(desiredWorkers)
+	workers, err := sharedEvaluationWorkers.acquireContext(p.ctx, desiredWorkers)
+	if err != nil {
+		return results
+	}
 	defer sharedEvaluationWorkers.release(workers)
 	if workers <= 1 {
 		for index, packer := range packers {
+			if contextError(p.ctx) != nil {
+				break
+			}
 			observeBox(packer)
 			if p.schedulerObserver != nil {
 				p.schedulerObserver(evaluationCandidate, 1)
@@ -270,6 +312,9 @@ func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
 		go func() {
 			defer waitGroup.Done()
 			for index := range jobs {
+				if contextError(p.ctx) != nil {
+					continue
+				}
 				packer := packers[index]
 				observeBox(packer)
 				current := int(active.Add(1))
@@ -282,6 +327,10 @@ func (p *Packer) evaluateCandidates(packers []*volumePacker) []*PackedBox {
 		}()
 	}
 	for index := range packers {
+		if contextError(p.ctx) != nil {
+			break
+		}
+		// Workers always drain the bounded jobs channel, then are joined below.
 		jobs <- index
 	}
 	close(jobs)
@@ -392,15 +441,26 @@ func (p *Packer) replicateIdenticalBoxes(template *PackedBox) []*PackedBox {
 	for sig, need := range boxCounts {
 		toRemove[sig] = need * replications
 	}
-	taken := p.items.takeSignatureMultiset(toRemove)
+	workingItems := p.items.clone()
+	taken := workingItems.takeSignatureMultiset(toRemove)
 	clones := make([]*PackedBox, replications)
 	for i := range clones {
+		if contextError(p.ctx) != nil {
+			return nil
+		}
 		clones[i] = template.clone()
-		for _, placement := range clones[i].Items {
+		for index, placement := range clones[i].Items {
+			if index%128 == 0 && contextError(p.ctx) != nil {
+				return nil
+			}
 			sig := signatureOf(placement.Item)
 			placement.Item = taken[sig].extract()
 		}
 	}
+	if contextError(p.ctx) != nil {
+		return nil
+	}
+	p.items = workingItems
 	p.boxQuantities[template.Box] -= replications
 	return clones
 }

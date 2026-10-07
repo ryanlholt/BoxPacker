@@ -1,12 +1,14 @@
 package boxpacker
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
 
 // VolumePacker packs as many items as possible into a single specific box.
 type volumePacker struct {
+	ctx                 context.Context
 	box                 Box
 	items               *itemList
 	layerPacker         *layerPacker
@@ -25,6 +27,14 @@ func newVolumePacker(box Box, items *itemList) *volumePacker {
 		layerPacker:        newLayerPacker(box),
 		hasNoRotationItems: items.hasNoRotationItems(),
 	}
+}
+
+func newVolumePackerWithContext(ctx context.Context, box Box, items *itemList) *volumePacker {
+	vp := newVolumePacker(box, items)
+	vp.ctx = ctx
+	vp.layerPacker.ctx = ctx
+	vp.layerPacker.factory.ctx = ctx
+	return vp
 }
 
 // NewVolumePacker creates a packer that packs as many of the given items as
@@ -54,6 +64,27 @@ func (vp *VolumePacker) SetMaxConcurrency(maxConcurrency int) {
 // Pack runs the packing and returns the resulting packed box.
 func (vp *VolumePacker) Pack() *PackedBox {
 	return vp.inner.pack()
+}
+
+// PackContext is the cancellation-aware counterpart of Pack. It returns no
+// candidate result on cancellation and waits for its evaluation workers to stop.
+func (vp *VolumePacker) PackContext(ctx context.Context) (*PackedBox, error) {
+	if ctx == nil {
+		panic("boxpacker: nil context")
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	previous := vp.inner.ctx
+	vp.inner.ctx, vp.inner.layerPacker.ctx, vp.inner.layerPacker.factory.ctx = ctx, ctx, ctx
+	defer func() {
+		vp.inner.ctx, vp.inner.layerPacker.ctx, vp.inner.layerPacker.factory.ctx = previous, previous, previous
+	}()
+	result := vp.inner.pack()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // setSinglePassMode puts the packer into a cheaper, non-exhaustive mode used
@@ -116,6 +147,9 @@ func (vp *volumePacker) evaluationTasks() []volumeEvaluationTask {
 }
 
 func (vp *volumePacker) runEvaluationTask(task volumeEvaluationTask) *PackedBox {
+	if contextError(vp.ctx) != nil {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
 	return vp.packRotation(task.boxWidth, task.boxLength, task.firstItem)
 }
 
@@ -137,7 +171,10 @@ func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluat
 		// not recursively acquire another slot.
 		return vp.reduceEvaluationTasks(tasks, 1, observer)
 	}
-	leasedWorkers := sharedEvaluationWorkers.acquire(1)
+	leasedWorkers, err := sharedEvaluationWorkers.acquireContext(vp.ctx, 1)
+	if err != nil {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
 	defer func() { sharedEvaluationWorkers.release(leasedWorkers) }()
 	if workers <= 1 {
 		return vp.reduceEvaluationTasks(tasks, 1, observer)
@@ -147,7 +184,7 @@ func (vp *volumePacker) packWithConcurrency(maxConcurrency int, observer evaluat
 	// the first orientation fits everything, do not speculatively solve a second
 	// orientation and wait for work whose result cannot be selected.
 	first := vp.reduceEvaluationTasks(tasks[:1], 1, observer)
-	if len(first.Items) == vp.items.count() || len(tasks) == 1 {
+	if contextError(vp.ctx) != nil || len(first.Items) == vp.items.count() || len(tasks) == 1 {
 		return first
 	}
 
@@ -191,6 +228,9 @@ func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, work
 	if workers <= 1 {
 		var best *PackedBox
 		for _, task := range tasks {
+			if contextError(vp.ctx) != nil {
+				break
+			}
 			if observer != nil {
 				observer(evaluationOrientation, 1)
 			}
@@ -201,6 +241,9 @@ func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, work
 			if best == nil || result.VolumeUtilisation() > best.VolumeUtilisation() {
 				best = result
 			}
+		}
+		if best == nil {
+			return newPackedBox(vp.box, &packedItemList{})
 		}
 		return best
 	}
@@ -228,6 +271,9 @@ func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, work
 	results := make([]*PackedBox, len(tasks))
 	var best *PackedBox
 	for batchStart := 0; batchStart < len(tasks); batchStart += workers {
+		if contextError(vp.ctx) != nil {
+			break
+		}
 		batchEnd := minInt(batchStart+workers, len(tasks))
 		for index := batchStart; index < batchEnd; index++ {
 			jobs <- index
@@ -252,6 +298,9 @@ func (vp *volumePacker) reduceEvaluationTasks(tasks []volumeEvaluationTask, work
 	close(jobs)
 	waitGroup.Wait()
 
+	if best == nil {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
 	return best
 }
 
@@ -260,6 +309,9 @@ func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientati
 	items := vp.items.clone()
 
 	for items.count() > 0 {
+		if contextError(vp.ctx) != nil {
+			return newPackedBox(vp.box, &packedItemList{})
+		}
 		layerStartDepth := 0
 		for _, layer := range layers {
 			layerStartDepth += layer.depth()
@@ -286,6 +338,9 @@ func (vp *volumePacker) packRotation(boxWidth, boxLength int, firstItemOrientati
 		}
 	}
 
+	if contextError(vp.ctx) != nil {
+		return newPackedBox(vp.box, &packedItemList{})
+	}
 	if !vp.singlePassMode && len(layers) > 0 {
 		layers = stabiliseLayers(layers)
 
