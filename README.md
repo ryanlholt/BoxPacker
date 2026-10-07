@@ -83,6 +83,36 @@ global optimality. Weight redistribution runs afterward; disable it with
 `SetMaxBoxesToBalanceWeight(0)` if preserving the search's volume objective is
 more important than balancing parcel weights.
 
+## Cancellation
+
+`packer.PackContext(ctx)` and `volumePacker.PackContext(ctx)` support cooperative
+cancellation. Existing `Pack()` methods retain background-context behavior.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+defer cancel()
+boxes, err := packer.PackContext(ctx)
+if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+    // The solve was interrupted. Do not present it as a complete solution.
+}
+```
+
+Import `context`, `errors`, and `time` for this example. Cancellation propagates
+through shared worker acquisition, candidate/orientation solves and lookahead,
+placement, replication, optional search, and weight redistribution. Worker
+pools are joined before the method returns and canceled waiters do not prevent
+later callers from acquiring capacity.
+
+Cancellation returns the context error even when partial packing is allowed.
+`Packer` can return already committed boxes with that error; interrupted
+candidates and speculative replica/search changes are not committed. Returned
+boxes on cancellation are not promised to have final result ordering.
+`VolumePacker` returns no candidate result on cancellation. These packers mutate
+their state and must not be used concurrently. Cancellation checks happen at
+work boundaries, so this is not a hard real-time deadline. Custom Item, Box,
+and sorter methods must return promptly; context cancellation cannot interrupt
+a blocked user-defined method.
+
 ## Weight redistribution
 
 Like the PHP packer, `Pack` performs a post-pack pass by default when the

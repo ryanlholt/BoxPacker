@@ -1,6 +1,7 @@
 package boxpacker
 
 import (
+	"context"
 	"runtime"
 	"sync"
 )
@@ -35,16 +36,17 @@ type evaluationSchedulerObserver func(kind evaluationKind, active int)
 // workers. A pool may receive fewer workers than it requested, and waits in
 // FIFO order when every GOMAXPROCS slot is already leased by other pack calls.
 type evaluationWorkerBudget struct {
-	mutex         sync.Mutex
-	condition     *sync.Cond
-	active        int
-	waiting       int
-	nextTicket    uint64
-	servingTicket uint64
+	mutex           sync.Mutex
+	condition       *sync.Cond
+	active          int
+	waiting         int
+	nextTicket      uint64
+	servingTicket   uint64
+	canceledTickets map[uint64]bool
 }
 
 func newEvaluationWorkerBudget() *evaluationWorkerBudget {
-	budget := &evaluationWorkerBudget{}
+	budget := &evaluationWorkerBudget{canceledTickets: make(map[uint64]bool)}
 	budget.condition = sync.NewCond(&budget.mutex)
 	return budget
 }
@@ -52,8 +54,19 @@ func newEvaluationWorkerBudget() *evaluationWorkerBudget {
 var sharedEvaluationWorkers = newEvaluationWorkerBudget()
 
 func (b *evaluationWorkerBudget) acquire(requested int) int {
+	workers, _ := b.acquireContext(context.Background(), requested)
+	return workers
+}
+
+func (b *evaluationWorkerBudget) acquireContext(ctx context.Context, requested int) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := contextError(ctx); err != nil {
+		return 0, err
+	}
 	if requested < 1 {
-		return 0
+		return 0, nil
 	}
 
 	b.mutex.Lock()
@@ -62,23 +75,53 @@ func (b *evaluationWorkerBudget) acquire(requested int) int {
 	if b.waiting == 0 && b.active < limit {
 		granted := minInt(requested, limit-b.active)
 		b.active += granted
-		return granted
+		return granted, nil
 	}
 
 	ticket := b.nextTicket
 	b.nextTicket++
 	b.waiting++
+	// Wake canceled waiters even when no lease is released. The callback uses
+	// the same mutex as Wait so cancellation cannot be lost between checks.
+	stop := context.AfterFunc(ctx, func() {
+		b.mutex.Lock()
+		b.condition.Broadcast()
+		b.mutex.Unlock()
+	})
+	defer stop()
 	for ticket != b.servingTicket || b.active >= limit {
+		if err := contextError(ctx); err != nil {
+			b.waiting--
+			b.canceledTickets[ticket] = true
+			b.advanceCanceledTickets()
+			b.condition.Broadcast()
+			return 0, err
+		}
 		b.condition.Wait()
 		limit = runtime.GOMAXPROCS(0)
+	}
+	if err := contextError(ctx); err != nil {
+		b.waiting--
+		b.canceledTickets[ticket] = true
+		b.advanceCanceledTickets()
+		b.condition.Broadcast()
+		return 0, err
 	}
 	granted := minInt(requested, limit-b.active)
 	b.active += granted
 	b.waiting--
 	b.servingTicket++
+	b.advanceCanceledTickets()
 	// The next waiter may be able to use capacity left by a partial grant.
 	b.condition.Broadcast()
-	return granted
+	return granted, nil
+}
+
+func (b *evaluationWorkerBudget) advanceCanceledTickets() {
+	for b.canceledTickets[b.servingTicket] {
+		delete(b.canceledTickets, b.servingTicket)
+		b.servingTicket++
+	}
 }
 
 func (b *evaluationWorkerBudget) tryAcquire(requested int) int {

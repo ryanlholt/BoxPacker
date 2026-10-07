@@ -1,6 +1,9 @@
 package boxpacker
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 // packedLayer is a horizontal slice of packed items within a box.
 type packedLayer struct {
@@ -84,6 +87,7 @@ func (l *packedLayer) depth() int {
 
 // layerPacker packs items into an individual vertical layer of a box.
 type layerPacker struct {
+	ctx     context.Context
 	box     Box
 	factory *orientatedItemFactory
 }
@@ -115,6 +119,9 @@ func (lp *layerPacker) packLayer(
 	skippedItems := &itemList{}
 
 	for items.count() > 0 {
+		if contextError(lp.ctx) != nil {
+			return layer
+		}
 		itemToPack := items.extract()
 
 		// skip items that will never fit e.g. too heavy
@@ -169,6 +176,9 @@ func (lp *layerPacker) packLayer(
 			// abandon here if next item is the same, no point trying to keep going.
 			// Last one is not skipped, need that to trigger appropriate reset logic.
 			for items.count() > 1 && samePackingDimensions(itemToPack, items.top()) {
+				if contextError(lp.ctx) != nil {
+					return layer
+				}
 				run := items.runs[0]
 				run.quantity = minInt(run.quantity, items.count()-1)
 				skippedItems.insert(run.item, run.quantity)
